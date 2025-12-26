@@ -1,7 +1,7 @@
 mod commands;
 mod compute;
 
-use commands::ComputeState;
+use commands::{ActiveExecutions, ComputeState};
 use log::info;
 use std::sync::Mutex;
 use tauri::Manager;
@@ -16,6 +16,7 @@ pub fn run() {
                 .build(),
         )
         .manage(Mutex::new(ComputeState::default()))
+        .manage(ActiveExecutions::default())
         .invoke_handler(tauri::generate_handler![
             // DataForge data access (read-only)
             commands::get_dataforge_status,
@@ -31,6 +32,14 @@ pub fn run() {
             commands::get_udf_parameters,
             commands::execute_udf,
             commands::validate_udf_parameters,
+            // Save output
+            commands::save_output_curve,
+            // Provenance
+            commands::get_curve_provenance,
+            // Progress and cancellation
+            commands::get_execution_progress,
+            commands::cancel_execution,
+            commands::list_active_executions,
         ])
         .setup(|app| {
             info!("🚀 Initializing DataForge Compute");

@@ -8,15 +8,92 @@ use crate::compute::error::UdfError;
 use crate::compute::parameters::ParameterValues;
 use crate::compute::types::{CurveData, CurveDataType, InputReference};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use uuid::Uuid;
+
+/// Progress callback type for reporting execution progress.
+pub type ProgressCallback = Box<dyn Fn(f64, Option<&str>) + Send + Sync>;
+
+/// Shared cancellation token for execution control.
+#[derive(Debug, Default)]
+pub struct CancellationToken {
+    cancelled: AtomicBool,
+}
+
+impl CancellationToken {
+    /// Create a new cancellation token.
+    pub fn new() -> Self {
+        Self {
+            cancelled: AtomicBool::new(false),
+        }
+    }
+
+    /// Request cancellation.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    /// Check if cancellation has been requested.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
+
+/// Shared progress state for execution tracking.
+#[derive(Debug)]
+pub struct ProgressState {
+    /// Progress percentage (0-100)
+    progress: AtomicU8,
+    /// Current status message
+    message: std::sync::RwLock<Option<String>>,
+}
+
+impl Default for ProgressState {
+    fn default() -> Self {
+        Self {
+            progress: AtomicU8::new(0),
+            message: std::sync::RwLock::new(None),
+        }
+    }
+}
+
+impl ProgressState {
+    /// Create a new progress state.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set progress (0-100).
+    pub fn set_progress(&self, percent: f64) {
+        let clamped = percent.clamp(0.0, 100.0) as u8;
+        self.progress.store(clamped, Ordering::SeqCst);
+    }
+
+    /// Set progress with a message.
+    pub fn set_progress_with_message(&self, percent: f64, message: impl Into<String>) {
+        self.set_progress(percent);
+        if let Ok(mut msg) = self.message.write() {
+            *msg = Some(message.into());
+        }
+    }
+
+    /// Get current progress (0-100).
+    pub fn get_progress(&self) -> u8 {
+        self.progress.load(Ordering::SeqCst)
+    }
+
+    /// Get current message.
+    pub fn get_message(&self) -> Option<String> {
+        self.message.read().ok().and_then(|m| m.clone())
+    }
+}
 
 /// Execution context providing sandboxed access to data and parameters.
 ///
 /// The context is created by the ExecutionEngine and passed to the UDF
 /// during execution. It provides read-only access to input curves and
 /// validated parameters.
-#[derive(Debug)]
 pub struct ExecutionContext {
     /// Validated parameter values
     parameters: ParameterValues,
@@ -30,6 +107,21 @@ pub struct ExecutionContext {
     workspace_id: Uuid,
     /// Execution metadata
     metadata: HashMap<String, String>,
+    /// Cancellation token for cooperative cancellation
+    cancellation_token: Arc<CancellationToken>,
+    /// Progress state for reporting execution progress
+    progress_state: Arc<ProgressState>,
+}
+
+impl std::fmt::Debug for ExecutionContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExecutionContext")
+            .field("well_id", &self.well_id)
+            .field("workspace_id", &self.workspace_id)
+            .field("curves", &self.curves.keys().collect::<Vec<_>>())
+            .field("input_refs", &self.input_refs.len())
+            .finish()
+    }
 }
 
 impl ExecutionContext {
@@ -44,7 +136,80 @@ impl ExecutionContext {
             well_id,
             workspace_id,
             metadata: HashMap::new(),
+            cancellation_token: Arc::new(CancellationToken::new()),
+            progress_state: Arc::new(ProgressState::new()),
         }
+    }
+
+    /// Create a new execution context with a shared cancellation token.
+    pub fn with_cancellation_token(
+        well_id: Uuid,
+        workspace_id: Uuid,
+        parameters: ParameterValues,
+        cancellation_token: Arc<CancellationToken>,
+    ) -> Self {
+        Self {
+            parameters,
+            curves: HashMap::new(),
+            input_refs: Vec::new(),
+            well_id,
+            workspace_id,
+            metadata: HashMap::new(),
+            cancellation_token,
+            progress_state: Arc::new(ProgressState::new()),
+        }
+    }
+
+    // === Cancellation Support ===
+
+    /// Check if the execution has been cancelled.
+    ///
+    /// UDFs should periodically check this and return early if true.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation_token.is_cancelled()
+    }
+
+    /// Get the cancellation token for external control.
+    pub fn cancellation_token(&self) -> Arc<CancellationToken> {
+        self.cancellation_token.clone()
+    }
+
+    /// Check cancellation and return an error if cancelled.
+    ///
+    /// Convenience method for use in UDF loops.
+    pub fn check_cancelled(&self) -> Result<(), UdfError> {
+        if self.is_cancelled() {
+            Err(UdfError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    // === Progress Reporting ===
+
+    /// Set the current progress (0-100).
+    pub fn set_progress(&self, percent: f64) {
+        self.progress_state.set_progress(percent);
+    }
+
+    /// Set progress with a status message.
+    pub fn set_progress_with_message(&self, percent: f64, message: impl Into<String>) {
+        self.progress_state.set_progress_with_message(percent, message);
+    }
+
+    /// Get the current progress (0-100).
+    pub fn get_progress(&self) -> u8 {
+        self.progress_state.get_progress()
+    }
+
+    /// Get the current progress message.
+    pub fn get_progress_message(&self) -> Option<String> {
+        self.progress_state.get_message()
+    }
+
+    /// Get the progress state for external monitoring.
+    pub fn progress_state(&self) -> Arc<ProgressState> {
+        self.progress_state.clone()
     }
 
     /// Get the well ID for this execution.
@@ -174,6 +339,8 @@ pub struct ExecutionContextBuilder {
     parameters: ParameterValues,
     curves: HashMap<String, Arc<CurveData>>,
     metadata: HashMap<String, String>,
+    cancellation_token: Option<Arc<CancellationToken>>,
+    progress_state: Option<Arc<ProgressState>>,
 }
 
 impl ExecutionContextBuilder {
@@ -185,6 +352,8 @@ impl ExecutionContextBuilder {
             parameters: ParameterValues::default(),
             curves: HashMap::new(),
             metadata: HashMap::new(),
+            cancellation_token: None,
+            progress_state: None,
         }
     }
 
@@ -206,15 +375,42 @@ impl ExecutionContextBuilder {
         self
     }
 
+    /// Set a shared cancellation token.
+    pub fn with_cancellation_token(mut self, token: Arc<CancellationToken>) -> Self {
+        self.cancellation_token = Some(token);
+        self
+    }
+
+    /// Set a shared progress state.
+    pub fn with_progress_state(mut self, state: Arc<ProgressState>) -> Self {
+        self.progress_state = Some(state);
+        self
+    }
+
     /// Build the execution context.
     pub fn build(self) -> ExecutionContext {
-        let mut ctx = ExecutionContext::new(self.well_id, self.workspace_id, self.parameters);
+        let cancellation_token = self
+            .cancellation_token
+            .unwrap_or_else(|| Arc::new(CancellationToken::new()));
+        let progress_state = self
+            .progress_state
+            .unwrap_or_else(|| Arc::new(ProgressState::new()));
+
+        let mut ctx = ExecutionContext {
+            parameters: self.parameters,
+            curves: HashMap::new(),
+            input_refs: Vec::new(),
+            well_id: self.well_id,
+            workspace_id: self.workspace_id,
+            metadata: self.metadata,
+            cancellation_token,
+            progress_state,
+        };
 
         for (name, curve) in self.curves {
             ctx.add_curve(name, curve);
         }
 
-        ctx.metadata = self.metadata;
         ctx
     }
 }

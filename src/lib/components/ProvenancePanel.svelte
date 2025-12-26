@@ -1,0 +1,301 @@
+<script lang="ts">
+	/**
+	 * Provenance Panel - Display lineage information for derived curves
+	 *
+	 * Shows the execution history and input sources for curves created
+	 * by UDF computations.
+	 */
+	import { invoke } from '@tauri-apps/api/core';
+	import type { CurveInfo } from '$lib/types';
+
+	interface ExecutionRecord {
+		id: string;
+		udf_id: string;
+		udf_version: string;
+		inputs: InputReference[];
+		parameters: Record<string, unknown>;
+		output_curve_id: string | null;
+		output_parquet_hash: string | null;
+		started_at: string;
+		completed_at: string | null;
+		compute_app_version: string;
+		status: 'completed' | 'failed' | 'cancelled';
+		error_message: string | null;
+	}
+
+	interface InputReference {
+		curve_id: string;
+		mnemonic: string;
+		parquet_hash: string;
+		version: number;
+	}
+
+	interface Props {
+		curve: CurveInfo | null;
+	}
+
+	let { curve }: Props = $props();
+
+	let executionRecord = $state<ExecutionRecord | null>(null);
+	let isLoading = $state(false);
+	let error = $state<string | null>(null);
+
+	$effect(() => {
+		if (curve) {
+			loadProvenance(curve.id);
+		} else {
+			executionRecord = null;
+		}
+	});
+
+	async function loadProvenance(id: string) {
+		isLoading = true;
+		error = null;
+		try {
+			executionRecord = await invoke<ExecutionRecord | null>('get_curve_provenance', {
+				curveId: id
+			});
+		} catch (e) {
+			// Not a derived curve or provenance not available
+			executionRecord = null;
+		} finally {
+			isLoading = false;
+		}
+	}
+
+	function formatDate(dateStr: string): string {
+		return new Date(dateStr).toLocaleString();
+	}
+
+	function formatDuration(start: string, end: string | null): string {
+		if (!end) return 'In progress';
+		const startTime = new Date(start).getTime();
+		const endTime = new Date(end).getTime();
+		const ms = endTime - startTime;
+		if (ms < 1000) return `${ms}ms`;
+		if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+		return `${(ms / 60000).toFixed(1)}min`;
+	}
+</script>
+
+<div class="rounded-lg border bg-[hsl(var(--card))]">
+	<div class="border-b p-3">
+		<h3 class="text-sm font-semibold">Provenance</h3>
+		<p class="text-xs text-[hsl(var(--muted-foreground))]">
+			Data lineage{curve ? ` for ${curve.mnemonic}` : ''}
+		</p>
+	</div>
+
+	<div class="p-3">
+		{#if !curve}
+			<!-- No curve selected -->
+			<div class="py-4 text-center">
+				<svg
+					class="mx-auto mb-2 h-8 w-8 text-[hsl(var(--muted-foreground))] opacity-50"
+					fill="none"
+					stroke="currentColor"
+					viewBox="0 0 24 24"
+				>
+					<path
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						stroke-width="1.5"
+						d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
+					/>
+				</svg>
+				<p class="text-sm text-[hsl(var(--muted-foreground))]">Select a curve to view provenance</p>
+			</div>
+		{:else if isLoading}
+			<div class="flex items-center justify-center py-4">
+				<svg
+					class="h-5 w-5 animate-spin text-[hsl(var(--muted-foreground))]"
+					fill="none"
+					viewBox="0 0 24 24"
+				>
+					<circle
+						class="opacity-25"
+						cx="12"
+						cy="12"
+						r="10"
+						stroke="currentColor"
+						stroke-width="4"
+					></circle>
+					<path
+						class="opacity-75"
+						fill="currentColor"
+						d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+					></path>
+				</svg>
+			</div>
+		{:else if executionRecord}
+			<div class="space-y-4">
+				<!-- Status Badge -->
+				<div class="flex items-center gap-2">
+					{#if executionRecord.status === 'completed'}
+						<span
+							class="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-700 dark:bg-green-900/30 dark:text-green-400"
+						>
+							<svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+								<path
+									stroke-linecap="round"
+									stroke-linejoin="round"
+									stroke-width="2"
+									d="M5 13l4 4L19 7"
+								/>
+							</svg>
+							Derived Curve
+						</span>
+					{:else if executionRecord.status === 'failed'}
+						<span
+							class="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs text-red-700 dark:bg-red-900/30 dark:text-red-400"
+						>
+							<svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+								<path
+									stroke-linecap="round"
+									stroke-linejoin="round"
+									stroke-width="2"
+									d="M6 18L18 6M6 6l12 12"
+								/>
+							</svg>
+							Failed
+						</span>
+					{:else}
+						<span
+							class="inline-flex items-center gap-1 rounded-full bg-yellow-100 px-2 py-0.5 text-xs text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400"
+						>
+							Cancelled
+						</span>
+					{/if}
+				</div>
+
+				<!-- Tool Info -->
+				<div>
+					<div class="text-xs font-medium text-[hsl(var(--muted-foreground))]">Generated by</div>
+					<div class="mt-1 flex items-center gap-2">
+						<svg
+							class="h-4 w-4 text-[hsl(var(--muted-foreground))]"
+							fill="none"
+							stroke="currentColor"
+							viewBox="0 0 24 24"
+						>
+							<path
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								stroke-width="2"
+								d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"
+							/>
+						</svg>
+						<span class="text-sm font-medium">{executionRecord.udf_id}</span>
+						<span class="text-xs text-[hsl(var(--muted-foreground))]">
+							v{executionRecord.udf_version}
+						</span>
+					</div>
+				</div>
+
+				<!-- Input Curves -->
+				{#if executionRecord.inputs.length > 0}
+					<div>
+						<div class="text-xs font-medium text-[hsl(var(--muted-foreground))]">Input Curves</div>
+						<div class="mt-1 space-y-1">
+							{#each executionRecord.inputs as input}
+								<div
+									class="flex items-center gap-2 rounded bg-[hsl(var(--muted))] px-2 py-1 text-xs"
+								>
+									<svg
+										class="h-3 w-3 text-[hsl(var(--muted-foreground))]"
+										fill="none"
+										stroke="currentColor"
+										viewBox="0 0 24 24"
+									>
+										<path
+											stroke-linecap="round"
+											stroke-linejoin="round"
+											stroke-width="2"
+											d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4v16"
+										/>
+									</svg>
+									<span class="font-medium">{input.mnemonic}</span>
+									<span class="text-[hsl(var(--muted-foreground))]">v{input.version}</span>
+								</div>
+							{/each}
+						</div>
+					</div>
+				{/if}
+
+				<!-- Parameters -->
+				{#if Object.keys(executionRecord.parameters).length > 0}
+					<div>
+						<div class="text-xs font-medium text-[hsl(var(--muted-foreground))]">Parameters</div>
+						<div class="mt-1 rounded bg-[hsl(var(--muted))] p-2 font-mono text-xs">
+							{#each Object.entries(executionRecord.parameters) as [key, value]}
+								<div class="flex justify-between">
+									<span class="text-[hsl(var(--muted-foreground))]">{key}:</span>
+									<span>{JSON.stringify(value)}</span>
+								</div>
+							{/each}
+						</div>
+					</div>
+				{/if}
+
+				<!-- Execution Details -->
+				<div class="space-y-1 text-xs">
+					<div class="flex justify-between">
+						<span class="text-[hsl(var(--muted-foreground))]">Executed:</span>
+						<span>{formatDate(executionRecord.started_at)}</span>
+					</div>
+					<div class="flex justify-between">
+						<span class="text-[hsl(var(--muted-foreground))]">Duration:</span>
+						<span>
+							{formatDuration(executionRecord.started_at, executionRecord.completed_at)}
+						</span>
+					</div>
+					<div class="flex justify-between">
+						<span class="text-[hsl(var(--muted-foreground))]">Execution ID:</span>
+						<span class="font-mono">{executionRecord.id.slice(0, 8)}...</span>
+					</div>
+					{#if executionRecord.output_parquet_hash}
+						<div class="flex justify-between">
+							<span class="text-[hsl(var(--muted-foreground))]">Data Hash:</span>
+							<span class="font-mono">{executionRecord.output_parquet_hash.slice(0, 8)}...</span>
+						</div>
+					{/if}
+					<div class="flex justify-between">
+						<span class="text-[hsl(var(--muted-foreground))]">Compute Version:</span>
+						<span>{executionRecord.compute_app_version}</span>
+					</div>
+				</div>
+
+				<!-- Error Message -->
+				{#if executionRecord.error_message}
+					<div class="rounded border border-red-300 bg-red-50 p-2 dark:border-red-800 dark:bg-red-900/20">
+						<div class="text-xs font-medium text-red-700 dark:text-red-400">Error</div>
+						<p class="mt-1 text-xs text-red-600 dark:text-red-300">
+							{executionRecord.error_message}
+						</p>
+					</div>
+				{/if}
+			</div>
+		{:else}
+			<!-- Original (non-derived) curve -->
+			<div class="py-4 text-center">
+				<svg
+					class="mx-auto mb-2 h-8 w-8 text-[hsl(var(--muted-foreground))] opacity-50"
+					fill="none"
+					stroke="currentColor"
+					viewBox="0 0 24 24"
+				>
+					<path
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						stroke-width="1.5"
+						d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+					/>
+				</svg>
+				<p class="text-sm font-medium">Original Data</p>
+				<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+					This curve was imported from source data, not derived from a computation.
+				</p>
+			</div>
+		{/if}
+	</div>
+</div>

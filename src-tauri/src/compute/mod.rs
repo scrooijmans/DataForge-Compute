@@ -15,13 +15,14 @@ pub mod context;
 pub mod data_loader;
 pub mod engine;
 pub mod error;
+pub mod output_writer;
 pub mod parameters;
 pub mod providers;
 pub mod registry;
 pub mod types;
 
 // Re-export main types
-pub use context::ExecutionContext;
+pub use context::{CancellationToken, ExecutionContext, ProgressState};
 pub use data_loader::{DataForgeCurveLoader, init_compute_schema, save_execution_record};
 pub use engine::ExecutionEngine;
 pub use error::{UdfError, ValidationError};

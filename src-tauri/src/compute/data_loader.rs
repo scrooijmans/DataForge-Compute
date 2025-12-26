@@ -77,8 +77,9 @@ impl<'a> DataForgeCurveLoader<'a> {
 
 impl<'a> CurveLoader for DataForgeCurveLoader<'a> {
     fn load_curve(&self, curve_id: Uuid) -> Result<Arc<CurveData>, UdfError> {
-        // Query curve metadata
-        let (mnemonic, unit, parquet_hash, version, well_id, main_curve_type): (
+        // Query curve metadata with join to curve_properties
+        // DataForge uses property_id -> curve_properties.id for curve type
+        let (mnemonic, unit, parquet_hash, version, well_id, property_id): (
             String,
             Option<String>,
             Option<String>,
@@ -88,8 +89,12 @@ impl<'a> CurveLoader for DataForgeCurveLoader<'a> {
         ) = self
             .db
             .query_row(
-                "SELECT mnemonic, unit, parquet_hash, version, well_id, main_curve_type
-                 FROM curves WHERE id = ?1",
+                r#"SELECT c.mnemonic, c.unit,
+                          COALESCE(c.gridded_parquet_hash, c.native_parquet_hash),
+                          c.version, c.well_id, cp.id as property_id
+                   FROM curves c
+                   LEFT JOIN curve_properties cp ON c.property_id = cp.id
+                   WHERE c.id = ?1"#,
                 [curve_id.to_string()],
                 |row| {
                     Ok((
@@ -103,6 +108,9 @@ impl<'a> CurveLoader for DataForgeCurveLoader<'a> {
                 },
             )
             .map_err(|e| UdfError::CurveLoadError(format!("Curve not found: {}", e)))?;
+
+        // Convert property_id to MainCurveType format
+        let main_curve_type = property_id.map(|pid| property_id_to_curve_type_code(&pid));
 
         let parquet_hash =
             parquet_hash.ok_or_else(|| UdfError::CurveLoadError("Curve has no data".to_string()))?;
@@ -120,9 +128,31 @@ impl<'a> CurveLoader for DataForgeCurveLoader<'a> {
         let duckdb = DuckDbConnection::open_in_memory()
             .map_err(|e| UdfError::CurveLoadError(format!("DuckDB error: {}", e)))?;
 
+        // DataForge stores parquet with schema:
+        // - Native: [DEPTH: f64, {mnemonic}: f64]
+        // - Gridded: [DEPTH_INDEX: i64, {mnemonic}: f64]
+        // We need to handle both cases and use the mnemonic as the value column name
+        let escaped_path = blob_path.to_string_lossy().replace('\'', "''");
+        let escaped_mnemonic = mnemonic.replace('"', "\"\"");
+
+        // First, query the parquet schema to determine which depth column exists
+        let schema_query = format!(
+            "SELECT column_name FROM parquet_schema('{}') WHERE column_name IN ('DEPTH', 'DEPTH_INDEX')",
+            escaped_path
+        );
+
+        let depth_column: String = duckdb
+            .query_row(&schema_query, [], |row| row.get(0))
+            .unwrap_or_else(|_| "DEPTH".to_string()); // Default to DEPTH if query fails
+
+        // Query with the correct depth column and mnemonic as value column
         let query = format!(
-            "SELECT depth, value FROM read_parquet('{}') ORDER BY depth",
-            blob_path.to_string_lossy().replace('\'', "''")
+            r#"SELECT "{}" as depth, "{}" as value
+            FROM read_parquet('{}')
+            ORDER BY depth"#,
+            depth_column,
+            escaped_mnemonic,
+            escaped_path
         );
 
         let mut stmt = duckdb
@@ -183,15 +213,21 @@ impl<'a> CurveLoader for DataForgeCurveLoader<'a> {
     }
 
     fn load_curve_metadata(&self, curve_id: Uuid) -> Result<CurveMetadataInfo, UdfError> {
-        let (mnemonic, unit, row_count, main_curve_type): (String, Option<String>, i64, Option<String>) = self
+        let (mnemonic, unit, row_count, property_id): (String, Option<String>, i64, Option<String>) = self
             .db
             .query_row(
-                "SELECT mnemonic, unit, row_count, main_curve_type FROM curves WHERE id = ?1",
+                r#"SELECT c.mnemonic, c.unit,
+                          COALESCE(c.native_sample_count, 0),
+                          cp.id as property_id
+                   FROM curves c
+                   LEFT JOIN curve_properties cp ON c.property_id = cp.id
+                   WHERE c.id = ?1"#,
                 [curve_id.to_string()],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .map_err(|e| UdfError::CurveLoadError(format!("Curve not found: {}", e)))?;
 
+        let main_curve_type = property_id.map(|pid| property_id_to_curve_type_code(&pid));
         let curve_type = self.detect_curve_type(&mnemonic, main_curve_type.as_deref());
 
         Ok(CurveMetadataInfo {
@@ -201,6 +237,22 @@ impl<'a> CurveLoader for DataForgeCurveLoader<'a> {
             unit: unit.unwrap_or_default(),
             row_count,
         })
+    }
+}
+
+/// Convert DataForge property_id to MainCurveType code
+fn property_id_to_curve_type_code(property_id: &str) -> String {
+    match property_id {
+        "gamma_ray" => "GR".to_string(),
+        "bulk_density" => "RHOB".to_string(),
+        "neutron_porosity" => "NPHI".to_string(),
+        "deep_resistivity" | "medium_resistivity" | "shallow_resistivity" => "RT".to_string(),
+        "caliper" => "CALI".to_string(),
+        "compressional_slowness" | "shear_slowness" => "DT".to_string(),
+        "spontaneous_potential" => "SP".to_string(),
+        "photoelectric" => "PE".to_string(),
+        "depth" => "DEPTH".to_string(),
+        _ => "OTHER".to_string(),
     }
 }
 

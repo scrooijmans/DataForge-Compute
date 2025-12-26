@@ -36,6 +36,10 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 # DuckDB for reading curve data from Parquet
 duckdb = { version = "1.0", features = ["bundled"] }
 
+# Arrow and Parquet for writing curve data
+arrow = "53"
+parquet = "53"
+
 # Async
 tokio = { version = "1", features = ["full"] }
 
@@ -48,3 +52,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 # DateTime
 chrono = { version = "0.4", features = ["serde"] }
+
+# Hashing
+sha2 = "0.10"

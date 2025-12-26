@@ -61,6 +61,10 @@ pub enum UdfError {
     /// Numeric computation error (overflow, underflow, NaN)
     #[error("Numeric error: {0}")]
     NumericError(String),
+
+    /// Execution was cancelled by user
+    #[error("Execution cancelled")]
+    Cancelled,
 }
 
 impl From<rusqlite::Error> for UdfError {
