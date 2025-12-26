@@ -619,3 +619,4 @@ let chartData = $state.raw(largeDataset);
 
 Your DataForge Compute application demonstrates these patterns well, using stores for global state and runes for component-level reactivity, with effects bridging the two when needed.
 
+

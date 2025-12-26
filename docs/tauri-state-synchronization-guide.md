@@ -823,3 +823,4 @@ This would enable:
 
 Your current architecture is solid for a single-window application. Adding Tauri events would enhance it for multi-window scenarios and real-time updates.
 
+
