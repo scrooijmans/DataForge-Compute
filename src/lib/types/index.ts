@@ -38,6 +38,12 @@ export interface CurveInfo {
 	row_count: number;
 }
 
+/** Curve info with associated well data - for curve selector dialogs */
+export interface CurveInfoWithWell extends CurveInfo {
+	well_id: string;
+	well_name: string;
+}
+
 export interface CurveDataPoint {
 	depth: number;
 	value: number | null;

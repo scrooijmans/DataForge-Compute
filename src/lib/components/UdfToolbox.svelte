@@ -9,6 +9,7 @@
 		selectedUdfId,
 		selectUdf
 	} from '$lib/stores/compute';
+	import { selectionContext } from '$lib/panes/selection-context';
 	import type { UdfInfo } from '$lib/types';
 
 	let searchQuery = $state('');
@@ -52,6 +53,8 @@
 
 	function handleSelectUdf(udf: UdfInfo) {
 		selectUdf(udf.full_id);
+		// Update selection context so ContextToolbar shows UDF parameters
+		selectionContext.selectUdf(udf);
 	}
 </script>
 

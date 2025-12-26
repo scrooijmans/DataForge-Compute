@@ -8,18 +8,23 @@ import type {
 	WorkspaceInfo,
 	WellInfo,
 	CurveInfo,
+	CurveInfoWithWell,
 	CurveData,
 	ProviderInfo,
 	UdfInfo,
 	ParameterDefinition,
-	ExecuteUdfResult
+	ExecuteUdfResult,
+	CurveDataPoint
 } from '$lib/types';
+import { workspaceManager } from '$lib/panes/workspace-manager';
+import { PaneType } from '$lib/panes/layout-model';
 
 // Connection and data stores
 export const status = writable<DataForgeStatus | null>(null);
 export const workspaces = writable<WorkspaceInfo[]>([]);
 export const wells = writable<WellInfo[]>([]);
 export const curves = writable<CurveInfo[]>([]);
+export const allWorkspaceCurves = writable<CurveInfoWithWell[]>([]);
 export const curveData = writable<CurveData | null>(null);
 
 // Selection stores
@@ -138,14 +143,39 @@ export async function selectWorkspace(id: string) {
 	selectedCurveId.set(null);
 	wells.set([]);
 	curves.set([]);
+	allWorkspaceCurves.set([]);
 	curveData.set(null);
 	executionResult.set(null);
 
 	try {
-		const result = await invoke<WellInfo[]>('list_wells', { workspaceId: id });
-		wells.set(result);
+		// Load wells and all curves for the workspace in parallel
+		const [wellsResult, allCurvesResult] = await Promise.all([
+			invoke<WellInfo[]>('list_wells', { workspaceId: id }),
+			invoke<CurveInfoWithWell[]>('list_all_curves_for_workspace', { workspaceId: id })
+		]);
+		wells.set(wellsResult);
+		allWorkspaceCurves.set(allCurvesResult);
 	} catch (e) {
 		error.set(e instanceof Error ? e.message : String(e));
+	}
+}
+
+/**
+ * Load all curves for the current workspace (for curve selector dialogs)
+ */
+export async function loadAllWorkspaceCurves(): Promise<CurveInfoWithWell[]> {
+	const workspaceId = get(selectedWorkspaceId);
+	if (!workspaceId) {
+		return [];
+	}
+
+	try {
+		const result = await invoke<CurveInfoWithWell[]>('list_all_curves_for_workspace', { workspaceId });
+		allWorkspaceCurves.set(result);
+		return result;
+	} catch (e) {
+		error.set(e instanceof Error ? e.message : String(e));
+		return [];
 	}
 }
 
@@ -217,20 +247,20 @@ export function setParameterValue(name: string, value: unknown) {
 }
 
 export async function executeUdf(saveResult = false) {
-	let currentWorkspaceId: string | null = null;
-	let currentWellId: string | null = null;
-	let currentUdfId: string | null = null;
-	let currentParams: Record<string, unknown> = {};
-
-	selectedWorkspaceId.subscribe((v) => (currentWorkspaceId = v))();
-	selectedWellId.subscribe((v) => (currentWellId = v))();
-	selectedUdfId.subscribe((v) => (currentUdfId = v))();
-	parameterValues.subscribe((v) => (currentParams = v))();
+	// Get current values using Svelte's get() helper
+	const currentWorkspaceId = get(selectedWorkspaceId);
+	const currentWellId = get(selectedWellId);
+	const currentUdfId = get(selectedUdfId);
+	const currentParams = get(parameterValues);
+	const currentUdf = get(selectedUdf);
 
 	if (!currentWorkspaceId || !currentWellId || !currentUdfId) {
 		error.set('Please select a workspace, well, and UDF');
 		return;
 	}
+
+	// Get the UDF name for the output pane title
+	const udfName = currentUdf?.name || 'UDF Output';
 
 	isExecuting.set(true);
 	error.set(null);
@@ -251,12 +281,46 @@ export async function executeUdf(saveResult = false) {
 
 		if (!result.success && result.error) {
 			error.set(result.error);
+		} else if (result.success && result.output_data) {
+			// Create a table pane to display the output
+			createOutputTablePane(result, udfName);
 		}
 	} catch (e) {
 		error.set(e instanceof Error ? e.message : String(e));
 	} finally {
 		isExecuting.set(false);
 	}
+}
+
+/**
+ * Create a table pane to display UDF output data
+ */
+function createOutputTablePane(result: ExecuteUdfResult, udfName: string): void {
+	if (!result.output_data || result.output_data.length === 0) {
+		return;
+	}
+
+	// Create the table pane with output data
+	const title = result.output_mnemonic
+		? `${udfName}: ${result.output_mnemonic}`
+		: `${udfName} Output`;
+
+	workspaceManager.addPane(
+		PaneType.Table,
+		{
+			options: {
+				mnemonic: result.output_mnemonic,
+				executionId: result.execution_id,
+				udfName: udfName,
+				data: result.output_data
+			}
+		},
+		{
+			title,
+			position: 'right',
+			activate: true
+		}
+	);
 }
 
 export function clearError() {

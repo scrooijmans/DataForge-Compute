@@ -23,6 +23,7 @@ pub fn run() {
             commands::list_workspaces,
             commands::list_wells,
             commands::list_curves,
+            commands::list_all_curves_for_workspace,
             commands::get_curve_data,
             // Legacy computations (to be deprecated)
             commands::compute_moving_average,

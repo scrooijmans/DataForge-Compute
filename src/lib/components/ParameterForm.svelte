@@ -8,14 +8,18 @@
 		parameterValues,
 		validationErrors,
 		curves,
+		allWorkspaceCurves,
 		setParameterValue,
 		executeUdf,
 		isExecuting,
 		executionResult,
 		saveOutputCurve,
-		isSaving
+		isSaving,
+		selectedWellId,
+		selectWell
 	} from '$lib/stores/compute';
-	import type { ParameterDefinition, CurveInfo } from '$lib/types';
+	import type { ParameterDefinition, CurveInfoWithWell } from '$lib/types';
+	import CurveSelectorDialog from './CurveSelectorDialog.svelte';
 
 	interface Props {
 		onExecute?: () => void;
@@ -23,36 +27,40 @@
 
 	let { onExecute }: Props = $props();
 
-	// Filter curves for curve parameters based on allowed_types
-	function getCompatibleCurves(param: ParameterDefinition): CurveInfo[] {
-		// If no type restrictions, return all curves
-		if (!param.allowed_types || param.allowed_types.length === 0) {
-			return $curves;
-		}
+	/** Track which curve parameter has the dialog open */
+	let openDialogForParam = $state<string | null>(null);
 
-		return $curves.filter((c) => {
-			// Curves without a known type are NOT compatible with type-restricted parameters
-			// This prevents showing computed curves (AI_rel, PHIE, etc.) for GR-only parameters
-			if (!c.main_curve_type) return false;
-
-			// Map curve type codes (GR, RHOB, etc.) to display names (Gamma Ray, Bulk Density, etc.)
-			// The allowed_types from backend use display names
-			const typeCodeToDisplayName: Record<string, string> = {
-				GR: 'Gamma Ray',
-				RHOB: 'Bulk Density',
-				NPHI: 'Neutron Porosity',
-				RT: 'Resistivity',
-				CALI: 'Caliper',
-				DT: 'Sonic',
-				SP: 'Spontaneous Potential',
-				PE: 'Photo-electric Factor',
-				DEPTH: 'Depth',
-				OTHER: 'Other'
+	/** Get display info for a selected curve ID */
+	function getSelectedCurveDisplay(curveId: string | null | undefined): { mnemonic: string; wellName: string; curveType: string | null } | null {
+		if (!curveId) return null;
+		const curve = $allWorkspaceCurves.find(c => c.id === curveId);
+		if (curve) {
+			return {
+				mnemonic: curve.mnemonic,
+				wellName: curve.well_name,
+				curveType: curve.main_curve_type
 			};
+		}
+		// Fallback to curves store if not found in allWorkspaceCurves
+		const fallbackCurve = $curves.find(c => c.id === curveId);
+		if (fallbackCurve) {
+			return {
+				mnemonic: fallbackCurve.mnemonic,
+				wellName: '', // Unknown well
+				curveType: fallbackCurve.main_curve_type
+			};
+		}
+		return null;
+	}
 
-			const displayType = typeCodeToDisplayName[c.main_curve_type] || c.main_curve_type;
-			return param.allowed_types!.includes(displayType);
-		});
+	/** Handle curve selection from dialog */
+	function handleCurveSelect(param: ParameterDefinition, curve: CurveInfoWithWell) {
+		setParameterValue(param.name, curve.id);
+		// Also set the selected well if not already set, or if user selected a curve from a different well
+		if (curve.well_id && $selectedWellId !== curve.well_id) {
+			selectWell(curve.well_id);
+		}
+		openDialogForParam = null;
 	}
 
 	function handleParameterChange(param: ParameterDefinition, value: unknown) {
@@ -104,29 +112,44 @@
 						</label>
 
 						{#if param.type === 'curve'}
-							<!-- Curve selector -->
-							{@const compatibleCurves = getCompatibleCurves(param)}
-							<select
+							<!-- Curve selector with dialog -->
+							{@const selectedCurveInfo = getSelectedCurveDisplay($parameterValues[param.name] as string)}
+							<button
+								type="button"
 								id={param.name}
-								value={$parameterValues[param.name] ?? ''}
-								onchange={(e) => handleParameterChange(param, e.currentTarget.value)}
-								class="w-full rounded-md border bg-[hsl(var(--background))] px-3 py-2 text-sm"
+								onclick={() => (openDialogForParam = param.name)}
+								class="curve-select-button w-full rounded-md border bg-[hsl(var(--background))] px-3 py-2 text-sm text-left flex items-center justify-between gap-2 hover:bg-[hsl(var(--muted))] transition-colors"
 							>
-								<option value="">Select a curve...</option>
-								{#each compatibleCurves as curve (curve.id)}
-									<option value={curve.id}>
-										{curve.mnemonic}
-										{#if curve.main_curve_type}
-											({curve.main_curve_type})
+								{#if selectedCurveInfo}
+									<span class="flex-1 min-w-0">
+										<span class="font-medium">{selectedCurveInfo.mnemonic}</span>
+										{#if selectedCurveInfo.wellName}
+											<span class="text-[hsl(var(--muted-foreground))]"> - {selectedCurveInfo.wellName}</span>
 										{/if}
-									</option>
-								{/each}
-							</select>
+										{#if selectedCurveInfo.curveType}
+											<span class="ml-1 text-xs text-[hsl(var(--muted-foreground))]">({selectedCurveInfo.curveType})</span>
+										{/if}
+									</span>
+								{:else}
+									<span class="text-[hsl(var(--muted-foreground))]">Select a curve...</span>
+								{/if}
+								<svg class="w-4 h-4 text-[hsl(var(--muted-foreground))] shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4" />
+								</svg>
+							</button>
 							{#if param.allowed_types && param.allowed_types.length > 0}
 								<p class="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
 									Accepts: {param.allowed_types.join(', ')}
 								</p>
 							{/if}
+							<!-- Curve Selector Dialog -->
+							<CurveSelectorDialog
+								open={openDialogForParam === param.name}
+								allowedTypes={param.allowed_types}
+								selectedCurveId={$parameterValues[param.name] as string | null}
+								onSelect={(curve) => handleCurveSelect(param, curve)}
+								onClose={() => (openDialogForParam = null)}
+							/>
 						{:else if param.type === 'number'}
 							<!-- Numeric input -->
 							<div class="flex items-center gap-2">

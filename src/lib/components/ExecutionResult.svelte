@@ -1,19 +1,25 @@
 <script lang="ts">
 	/**
-	 * Execution Result - Display UDF execution output with Table and Chart views
+	 * Execution Result - Display UDF execution output with Chart and Table
+	 *
+	 * Uses ECharts for high-performance chart rendering with:
+	 * - Built-in LTTB sampling for large datasets
+	 * - GPU-accelerated canvas rendering
+	 * - Native zoom/pan support
 	 */
 	import { browser } from '$app/environment';
 	import { executionResult, selectedUdf, curveData } from '$lib/stores/compute';
-	import CurveChart from '$lib/components/charts/CurveChart.svelte';
+	import EChartsChart from '$lib/components/charts/EChartsChart.svelte';
+	import { curveDataToFrame, type ChartDataFrame } from '$lib/charts/types';
 	import type { ColDef } from 'ag-grid-community';
-
-	type ViewTab = 'table' | 'chart';
-	let activeTab = $state<ViewTab>('table');
 
 	// DataGrid state
 	let DataGrid: typeof import('./data/DataGrid.svelte').default | null = $state(null);
 	let gridColumnDefs = $state<ColDef[]>([]);
 	let gridRowData = $state<Record<string, unknown>[]>([]);
+
+	// Chart data frame for ECharts
+	let chartDataFrame = $state<ChartDataFrame | null>(null);
 
 	// Load DataGrid dynamically to avoid SSR issues
 	$effect(() => {
@@ -70,6 +76,15 @@
 				original: $curveData?.data[i]?.value ?? null,
 				output: point.value
 			}));
+
+			// Prepare chart data frame for ECharts
+			chartDataFrame = curveDataToFrame(
+				$executionResult.output_data,
+				outputMnemonic,
+				{ type: 'computed', computationId: $executionResult.execution_id }
+			);
+		} else {
+			chartDataFrame = null;
 		}
 	});
 </script>
@@ -116,6 +131,14 @@
 							/>
 						</svg>
 						Failed
+					</span>
+				{/if}
+				{#if $executionResult.success && $executionResult.output_data}
+					<span class="text-xs text-[hsl(var(--muted-foreground))]">
+						{$executionResult.output_data.length.toLocaleString()} points
+						{#if $executionResult.saved}
+							<span class="ml-1 text-green-600 dark:text-green-400">Saved</span>
+						{/if}
 					</span>
 				{/if}
 			</div>
@@ -177,113 +200,70 @@
 			</div>
 		{/if}
 
-		<!-- Output Data with Tabs -->
+		<!-- Output Data: Chart + Table -->
 		{#if $executionResult.success && $executionResult.output_data}
-			<!-- Tab Navigation -->
-			<div class="flex items-center gap-1 border-b px-3 pt-2">
-				<button
-					onclick={() => (activeTab = 'table')}
-					class="flex items-center gap-1.5 rounded-t-md px-3 py-1.5 text-xs font-medium transition-colors {activeTab === 'table'
-						? 'bg-[hsl(var(--muted))] text-[hsl(var(--foreground))]'
-						: 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'}"
-				>
-					<svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-						<path
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							stroke-width="2"
-							d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
-						/>
-					</svg>
-					Table
-				</button>
-				<button
-					onclick={() => (activeTab = 'chart')}
-					class="flex items-center gap-1.5 rounded-t-md px-3 py-1.5 text-xs font-medium transition-colors {activeTab === 'chart'
-						? 'bg-[hsl(var(--muted))] text-[hsl(var(--foreground))]'
-						: 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'}"
-				>
-					<svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-						<path
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							stroke-width="2"
-							d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"
-						/>
-					</svg>
-					Chart
-				</button>
-				<div class="ml-auto text-xs text-[hsl(var(--muted-foreground))]">
-					{$executionResult.output_data.length.toLocaleString()} points
-					{#if $executionResult.saved}
-						<span class="ml-2 text-green-600 dark:text-green-400">Saved</span>
-					{/if}
+			<div class="p-3 space-y-4">
+				<!-- Chart View -->
+				<div class="w-full overflow-hidden rounded border">
+					<EChartsChart
+						data={chartDataFrame}
+						type="line"
+						title={$executionResult.output_mnemonic || 'Computation Result'}
+						height={300}
+						invertY={true}
+						showCursor={true}
+						enableZoom={true}
+					/>
 				</div>
-			</div>
 
-			<!-- Tab Content -->
-			<div class="p-3">
-				{#if activeTab === 'table'}
-					<!-- Table View with AG Grid -->
-					{#if DataGrid && gridRowData.length > 0}
-						<div class="h-64 overflow-hidden rounded border">
-							<DataGrid
-								columnDefs={gridColumnDefs}
-								rowData={gridRowData}
-								height="100%"
-								pagination={false}
-								autoSizeColumns={true}
-							/>
-						</div>
-					{:else}
-						<!-- Fallback simple table while DataGrid loads -->
-						<div class="max-h-64 overflow-y-auto rounded border bg-[hsl(var(--muted))]">
-							<table class="w-full font-mono text-xs">
-								<thead class="sticky top-0 bg-[hsl(var(--muted))]">
-									<tr class="border-b border-[hsl(var(--border))]">
-										<th class="px-2 py-1 text-left">Depth</th>
-										{#if $curveData}
-											<th class="px-2 py-1 text-right">Original</th>
-										{/if}
-										<th class="px-2 py-1 text-right text-green-600 dark:text-green-400">Output</th>
-									</tr>
-								</thead>
-								<tbody>
-									{#each $executionResult.output_data.slice(0, 50) as point, i}
-										<tr class="border-b border-[hsl(var(--border))] last:border-0">
-											<td class="px-2 py-1">{point.depth.toFixed(2)}</td>
-											{#if $curveData && $curveData.data[i]}
-												<td class="px-2 py-1 text-right">
-													{$curveData.data[i].value !== null
-														? $curveData.data[i].value?.toFixed(4)
-														: 'null'}
-												</td>
-											{/if}
-											<td class="px-2 py-1 text-right text-green-600 dark:text-green-400">
-												{point.value !== null ? point.value.toFixed(4) : 'null'}
-											</td>
-										</tr>
-									{/each}
-								</tbody>
-							</table>
-						</div>
-						{#if $executionResult.output_data.length > 50}
-							<p class="mt-2 text-center text-xs text-[hsl(var(--muted-foreground))]">
-								Showing first 50 of {$executionResult.output_data.length.toLocaleString()} points (loading full grid...)
-							</p>
-						{/if}
-					{/if}
-				{:else if activeTab === 'chart'}
-					<!-- Chart View -->
-					<div class="flex justify-center overflow-x-auto">
-						<CurveChart
-							outputData={$executionResult.output_data}
-							outputMnemonic={$executionResult.output_mnemonic || 'Output'}
-							inputData={$curveData?.data}
-							inputMnemonic={$curveData?.mnemonic}
-							height={350}
+				<!-- Table View -->
+				{#if DataGrid && gridRowData.length > 0}
+					<div class="h-48 overflow-hidden rounded border">
+						<DataGrid
+							columnDefs={gridColumnDefs}
+							rowData={gridRowData}
+							height="100%"
+							pagination={false}
+							autoSizeColumns={true}
 						/>
 					</div>
+				{:else}
+					<!-- Fallback simple table while DataGrid loads -->
+					<div class="max-h-48 overflow-y-auto rounded border bg-[hsl(var(--muted))]">
+						<table class="w-full font-mono text-xs">
+							<thead class="sticky top-0 bg-[hsl(var(--muted))]">
+								<tr class="border-b border-[hsl(var(--border))]">
+									<th class="px-2 py-1 text-left">Depth</th>
+									{#if $curveData}
+										<th class="px-2 py-1 text-right">Original</th>
+									{/if}
+									<th class="px-2 py-1 text-right text-green-600 dark:text-green-400">Output</th>
+								</tr>
+							</thead>
+							<tbody>
+								{#each $executionResult.output_data.slice(0, 50) as point, i}
+									<tr class="border-b border-[hsl(var(--border))] last:border-0">
+										<td class="px-2 py-1">{point.depth.toFixed(2)}</td>
+										{#if $curveData && $curveData.data[i]}
+											<td class="px-2 py-1 text-right">
+												{$curveData.data[i].value !== null
+													? $curveData.data[i].value?.toFixed(4)
+													: 'null'}
+											</td>
+										{/if}
+										<td class="px-2 py-1 text-right text-green-600 dark:text-green-400">
+											{point.value !== null ? point.value.toFixed(4) : 'null'}
+										</td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+					{#if $executionResult.output_data.length > 50}
+						<p class="mt-2 text-center text-xs text-[hsl(var(--muted-foreground))]">
+							Showing first 50 of {$executionResult.output_data.length.toLocaleString()} points (loading full grid...)
+						</p>
+					{/if}
 				{/if}
 			</div>
 

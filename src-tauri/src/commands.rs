@@ -380,6 +380,72 @@ pub fn list_curves(
     Ok(curves)
 }
 
+/// Curve info with associated well data - for curve selector dialogs
+#[derive(Debug, Serialize)]
+pub struct CurveInfoWithWell {
+    pub id: String,
+    pub mnemonic: String,
+    pub unit: Option<String>,
+    pub description: Option<String>,
+    pub main_curve_type: Option<String>,
+    pub min_depth: Option<f64>,
+    pub max_depth: Option<f64>,
+    pub row_count: i64,
+    pub well_id: String,
+    pub well_name: String,
+}
+
+/// List all curves for a workspace with well information
+#[tauri::command]
+pub fn list_all_curves_for_workspace(
+    workspace_id: String,
+    state: State<'_, Mutex<ComputeState>>,
+) -> Result<Vec<CurveInfoWithWell>, String> {
+    let state = state.lock().expect("Failed to lock state");
+    let db = state.db.as_ref().ok_or("Not connected to DataForge")?;
+
+    // Join curves with wells and curve_properties to get all curve info
+    let mut stmt = db
+        .prepare(
+            r#"SELECT c.id, c.mnemonic, c.unit, c.description,
+                      cp.id as property_id,
+                      COALESCE(c.min_value, c.native_top_depth) as min_depth,
+                      COALESCE(c.max_value, c.native_bottom_depth) as max_depth,
+                      COALESCE(c.native_sample_count, 0) as row_count,
+                      w.id as well_id, w.name as well_name
+               FROM curves c
+               JOIN wells w ON c.well_id = w.id
+               LEFT JOIN curve_properties cp ON c.property_id = cp.id
+               WHERE w.workspace_id = ?1 AND c.deleted_at IS NULL
+               ORDER BY w.name, c.mnemonic"#,
+        )
+        .map_err(|e| format!("Query error: {}", e))?;
+
+    let curves = stmt
+        .query_map([&workspace_id], |row| {
+            let property_id: Option<String> = row.get(4)?;
+            let main_curve_type = property_id.map(|pid| property_id_to_curve_type(&pid));
+
+            Ok(CurveInfoWithWell {
+                id: row.get(0)?,
+                mnemonic: row.get(1)?,
+                unit: row.get(2)?,
+                description: row.get(3)?,
+                main_curve_type,
+                min_depth: row.get(5)?,
+                max_depth: row.get(6)?,
+                row_count: row.get(7)?,
+                well_id: row.get(8)?,
+                well_name: row.get(9)?,
+            })
+        })
+        .map_err(|e| format!("Query error: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Row error: {}", e))?;
+
+    Ok(curves)
+}
+
 /// Convert DataForge property_id to MainCurveType code
 fn property_id_to_curve_type(property_id: &str) -> String {
     match property_id {
