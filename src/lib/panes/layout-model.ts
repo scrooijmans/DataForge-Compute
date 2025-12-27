@@ -10,7 +10,7 @@
  * See DFC-chart-implementation.md Section 12 for design details.
  */
 
-import type { ChartConfig } from '../charts/types';
+import type { ChartConfig, ChartDataFrame } from '../charts/types';
 
 // ============================================================================
 // Layout Node Types
@@ -103,6 +103,8 @@ export interface PaneConfig {
 	curveIds?: string[];
 	/** Chart-specific configuration */
 	chartConfig?: ChartConfig;
+	/** Loaded chart data frame for rendering */
+	chartData?: ChartDataFrame;
 	/** Linked group for cursor/viewport sync */
 	linkedGroup?: string;
 	/** Additional pane-specific options */

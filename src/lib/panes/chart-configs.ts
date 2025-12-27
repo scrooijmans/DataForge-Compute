@@ -150,12 +150,16 @@ export interface CrossPlotConfig extends CommonChartOptions {
 	xAxis: AxisBinding;
 	/** Y-axis binding */
 	yAxis: AxisBinding;
-	/** Z-axis for color coding (optional) */
+	/** Z-axis for color coding (optional, used when colorMode is 'curve') */
 	zAxis?: AxisBinding;
 	/** Point styling */
 	style: SeriesStyle;
-	/** Color map for z-axis */
+	/** Color mode: 'curve' uses Z-axis curve values, 'well' uses well color */
+	colorMode: 'curve' | 'well' | 'none';
+	/** Color map for z-axis (used when colorMode is 'curve') */
 	colorMap: 'viridis' | 'plasma' | 'rainbow' | 'grayscale';
+	/** Well color (used when colorMode is 'well', auto-assigned if not set) */
+	wellColor?: string;
 	/** Show regression line */
 	showRegression: boolean;
 	/** Regression type */
@@ -329,6 +333,7 @@ export function createDefaultCrossPlotConfig(): CrossPlotConfig {
 		xAxis: { ...DEFAULT_AXIS_BINDING },
 		yAxis: { ...DEFAULT_AXIS_BINDING },
 		style: { ...DEFAULT_SERIES_STYLE, showPoints: true },
+		colorMode: 'none',
 		colorMap: 'viridis',
 		showRegression: false,
 		regressionType: 'linear',

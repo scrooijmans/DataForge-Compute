@@ -13,6 +13,7 @@
 	import { workspaceManager } from '$lib/panes/workspace-manager';
 	import ChartConfigPanel from './ChartConfigPanel.svelte';
 	import ParameterForm from '$lib/components/ParameterForm.svelte';
+	import type { ChartDataFrame } from '$lib/charts/types';
 
 	interface Props {
 		/** Available wells */
@@ -45,6 +46,22 @@
 			workspaceManager.updatePaneConfig($selectedPane.paneId, {
 				chartConfig: config as any, // Store the full chart config
 			});
+		}
+	}
+
+	/**
+	 * Handle chart data changes (when curve data is loaded)
+	 */
+	function handleChartDataChange(data: ChartDataFrame | null): void {
+		console.log('[ContextToolbar] handleChartDataChange called:', data ? `frame with ${data.length} points` : 'null');
+		if ($selectedPane) {
+			console.log('[ContextToolbar] Updating pane config for:', $selectedPane.paneId);
+			// Store the chart data in the pane config
+			workspaceManager.updatePaneConfig($selectedPane.paneId, {
+				chartData: data as any, // Store the chart data frame
+			});
+		} else {
+			console.log('[ContextToolbar] No selected pane, cannot update');
 		}
 	}
 </script>
@@ -102,6 +119,7 @@
 					{well}
 					{onWellChange}
 					onConfigChange={handleChartConfigChange}
+					onDataChange={handleChartDataChange}
 				/>
 			</div>
 		</div>

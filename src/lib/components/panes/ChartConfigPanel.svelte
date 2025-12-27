@@ -31,6 +31,8 @@
 		getChartTypeName,
 	} from '$lib/panes/chart-configs';
 	import CurveSelector from './CurveSelector.svelte';
+	import { loadCurveData } from '$lib/stores/dataStore';
+	import { curveDataToFrame, type ChartDataFrame } from '$lib/charts/types';
 
 	interface Props {
 		/** Selected pane node */
@@ -47,9 +49,14 @@
 		onWellChange?: (wellId: string) => void;
 		/** Callback when configuration changes */
 		onConfigChange: (config: ChartConfiguration) => void;
+		/** Callback when chart data changes */
+		onDataChange?: (data: ChartDataFrame | null) => void;
 	}
 
-	let { pane, config, wells, curves, well, onWellChange, onConfigChange }: Props = $props();
+	let { pane, config, wells, curves, well, onWellChange, onConfigChange, onDataChange }: Props = $props();
+
+	/** Loading state for curve data */
+	let isLoadingData = $state(false);
 
 	/** Initialize config if not present */
 	let chartConfig = $derived.by(() => {
@@ -83,10 +90,401 @@
 	}
 
 	/**
-	 * Update axis binding
+	 * Update axis binding and load curve data if applicable
 	 */
-	function updateAxis(axisKey: 'xAxis' | 'yAxis' | 'zAxis' | 'dataCurve', binding: AxisBinding): void {
-		onConfigChange({ ...chartConfig, [axisKey]: binding } as ChartConfiguration);
+	async function updateAxis(axisKey: 'xAxis' | 'yAxis' | 'zAxis' | 'dataCurve', binding: AxisBinding): Promise<void> {
+		console.log('[ChartConfigPanel] updateAxis called:', { axisKey, binding });
+		const newConfig = { ...chartConfig, [axisKey]: binding } as ChartConfiguration;
+		onConfigChange(newConfig);
+
+		// Trigger data loading when axis binding changes
+		await loadChartData(newConfig);
+	}
+
+	/**
+	 * Load chart data based on axis bindings
+	 * For scatter charts with two curves: find overlapping depths and pair values
+	 * For line charts: plot Y values against depth
+	 * For crossplots: find overlapping depths for X, Y, and optionally Z axes
+	 */
+	async function loadChartData(currentConfig: ChartConfiguration): Promise<void> {
+		console.log('[ChartConfigPanel] loadChartData called, config type:', currentConfig.type);
+
+		// Handle crossplot separately
+		if (currentConfig.type === 'crossplot') {
+			await loadCrossPlotData(currentConfig as CrossPlotConfig);
+			return;
+		}
+
+		// Only handle line/scatter charts for now
+		if (currentConfig.type !== 'line' && currentConfig.type !== 'scatter') {
+			console.log('[ChartConfigPanel] Skipping - not a line/scatter chart');
+			return;
+		}
+
+		const lineConfig = currentConfig as LineChartConfig | ScatterChartConfig;
+		const xAxisCurveId = lineConfig.xAxis?.curveId;
+		const yAxisCurveId = lineConfig.yAxis?.curveId;
+		console.log('[ChartConfigPanel] xAxisCurveId:', xAxisCurveId, 'yAxisCurveId:', yAxisCurveId);
+
+		// Need Y axis curve to plot data
+		if (!yAxisCurveId) {
+			console.log('[ChartConfigPanel] No Y axis curve selected, clearing data');
+			onDataChange?.(null);
+			return;
+		}
+
+		isLoadingData = true;
+
+		try {
+			// Load Y-axis curve data
+			console.log('[ChartConfigPanel] Loading Y-axis curve data for:', yAxisCurveId);
+			const yData = await loadCurveData(yAxisCurveId);
+			console.log('[ChartConfigPanel] Y curve data loaded:', yData ? `${yData.data.length} points` : 'null');
+
+			if (!yData || yData.data.length === 0) {
+				console.log('[ChartConfigPanel] No Y data, clearing');
+				onDataChange?.(null);
+				return;
+			}
+
+			// If X axis has a curve selected, create a curve-vs-curve plot
+			if (xAxisCurveId) {
+				console.log('[ChartConfigPanel] Loading X-axis curve data for:', xAxisCurveId);
+				const xData = await loadCurveData(xAxisCurveId);
+				console.log('[ChartConfigPanel] X curve data loaded:', xData ? `${xData.data.length} points` : 'null');
+
+				if (xData && xData.data.length > 0) {
+					// Create lookup map for X data by depth (using tolerance for floating point comparison)
+					const xByDepth = new Map<number, number | null>();
+					for (const point of xData.data) {
+						// Round depth to 4 decimal places for consistent matching
+						const roundedDepth = Math.round(point.depth * 10000) / 10000;
+						xByDepth.set(roundedDepth, point.value);
+					}
+
+					// Find overlapping depths and pair the values
+					const pairedData: Array<{ depth: number; xValue: number; yValue: number }> = [];
+					for (const yPoint of yData.data) {
+						const roundedDepth = Math.round(yPoint.depth * 10000) / 10000;
+						const xValue = xByDepth.get(roundedDepth);
+
+						// Only include points where both X and Y have valid values at the same depth
+						if (xValue !== undefined && xValue !== null && yPoint.value !== null) {
+							pairedData.push({
+								depth: yPoint.depth,
+								xValue: xValue,
+								yValue: yPoint.value
+							});
+						}
+					}
+
+					console.log('[ChartConfigPanel] Paired data points:', pairedData.length, 'from', yData.data.length, 'Y points and', xData.data.length, 'X points');
+
+					if (pairedData.length > 0) {
+						// Create frame for curve-vs-curve plot
+						const frame = createCurveVsCurveFrame(
+							pairedData,
+							xData.mnemonic,
+							yData.mnemonic,
+							xData.unit,
+							yData.unit,
+							well?.id
+						);
+						console.log('[ChartConfigPanel] Created curve-vs-curve frame:', { id: frame.id, length: frame.length });
+						onDataChange?.(frame);
+					} else {
+						console.log('[ChartConfigPanel] No overlapping depth points found');
+						onDataChange?.(null);
+					}
+					return;
+				}
+			}
+
+			// No X curve or X curve failed - fall back to Y vs Depth plot
+			const frame = curveDataToFrame(yData.data, yData.mnemonic, {
+				type: 'well_curve',
+				wellId: well?.id,
+				curveId: yAxisCurveId
+			});
+			console.log('[ChartConfigPanel] Created Y vs Depth frame:', { id: frame.id, length: frame.length });
+
+			// Add unit info if available
+			if (yData.unit && frame.fields[1]) {
+				frame.fields[1].unit = yData.unit;
+			}
+
+			onDataChange?.(frame);
+		} catch (error) {
+			console.error('[ChartConfigPanel] Failed to load curve data:', error);
+			onDataChange?.(null);
+		} finally {
+			isLoadingData = false;
+		}
+	}
+
+	/**
+	 * Load crossplot data with optional Z-axis for color coding
+	 * Finds overlapping depth indices across all selected curves
+	 */
+	async function loadCrossPlotData(crossConfig: CrossPlotConfig): Promise<void> {
+		const xAxisCurveId = crossConfig.xAxis?.curveId;
+		const yAxisCurveId = crossConfig.yAxis?.curveId;
+		const zAxisCurveId = crossConfig.colorMode === 'curve' ? crossConfig.zAxis?.curveId : null;
+
+		console.log('[ChartConfigPanel] loadCrossPlotData:', { xAxisCurveId, yAxisCurveId, zAxisCurveId, colorMode: crossConfig.colorMode });
+
+		// Need both X and Y axes to plot crossplot
+		if (!xAxisCurveId || !yAxisCurveId) {
+			console.log('[ChartConfigPanel] Missing X or Y axis curve for crossplot');
+			onDataChange?.(null);
+			return;
+		}
+
+		isLoadingData = true;
+
+		try {
+			// Load X and Y curve data
+			const [xData, yData] = await Promise.all([
+				loadCurveData(xAxisCurveId),
+				loadCurveData(yAxisCurveId)
+			]);
+
+			if (!xData || !yData || xData.data.length === 0 || yData.data.length === 0) {
+				console.log('[ChartConfigPanel] Missing X or Y data for crossplot');
+				onDataChange?.(null);
+				return;
+			}
+
+			// Optionally load Z-axis data for color coding
+			let zData = null;
+			if (zAxisCurveId) {
+				zData = await loadCurveData(zAxisCurveId);
+				console.log('[ChartConfigPanel] Z curve data loaded:', zData ? `${zData.data.length} points` : 'null');
+			}
+
+			// Create lookup maps by depth
+			const xByDepth = new Map<number, number | null>();
+			for (const point of xData.data) {
+				const roundedDepth = Math.round(point.depth * 10000) / 10000;
+				xByDepth.set(roundedDepth, point.value);
+			}
+
+			const zByDepth = new Map<number, number | null>();
+			if (zData) {
+				for (const point of zData.data) {
+					const roundedDepth = Math.round(point.depth * 10000) / 10000;
+					zByDepth.set(roundedDepth, point.value);
+				}
+			}
+
+			// Find overlapping depths and gather all values
+			const crossPlotData: Array<{ depth: number; xValue: number; yValue: number; zValue?: number }> = [];
+
+			for (const yPoint of yData.data) {
+				const roundedDepth = Math.round(yPoint.depth * 10000) / 10000;
+				const xValue = xByDepth.get(roundedDepth);
+
+				// Need valid X and Y values at this depth
+				if (xValue === undefined || xValue === null || yPoint.value === null) {
+					continue;
+				}
+
+				// If Z-axis is selected, also need valid Z value
+				if (zAxisCurveId) {
+					const zValue = zByDepth.get(roundedDepth);
+					if (zValue === undefined || zValue === null) {
+						continue;
+					}
+					crossPlotData.push({
+						depth: yPoint.depth,
+						xValue,
+						yValue: yPoint.value,
+						zValue
+					});
+				} else {
+					crossPlotData.push({
+						depth: yPoint.depth,
+						xValue,
+						yValue: yPoint.value
+					});
+				}
+			}
+
+			console.log('[ChartConfigPanel] CrossPlot data points:', crossPlotData.length);
+
+			if (crossPlotData.length > 0) {
+				console.log('[ChartConfigPanel] Creating frame with colorMode:', crossConfig.colorMode, 'colorMap:', crossConfig.colorMap);
+				const frame = createCrossPlotFrame(
+					crossPlotData,
+					xData.mnemonic,
+					yData.mnemonic,
+					zData?.mnemonic,
+					xData.unit,
+					yData.unit,
+					zData?.unit,
+					crossConfig.colorMode,
+					crossConfig.colorMap,
+					crossConfig.wellColor ?? getRandomWellColor(),
+					well?.id
+				);
+				console.log('[ChartConfigPanel] Created crossplot frame:', { id: frame.id, length: frame.length, fields: frame.fields.map(f => f.name), meta: frame.meta });
+				onDataChange?.(frame);
+			} else {
+				console.log('[ChartConfigPanel] No overlapping depth points found for crossplot');
+				onDataChange?.(null);
+			}
+		} catch (error) {
+			console.error('[ChartConfigPanel] Failed to load crossplot data:', error);
+			onDataChange?.(null);
+		} finally {
+			isLoadingData = false;
+		}
+	}
+
+	/**
+	 * Generate a random color for well coloring
+	 */
+	function getRandomWellColor(): string {
+		const colors = ['#3b82f6', '#22c55e', '#ef4444', '#f59e0b', '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16'];
+		return colors[Math.floor(Math.random() * colors.length)];
+	}
+
+	/**
+	 * Create a ChartDataFrame for curve-vs-curve plotting (e.g., GR vs Resistivity)
+	 */
+	function createCurveVsCurveFrame(
+		data: Array<{ depth: number; xValue: number; yValue: number }>,
+		xMnemonic: string,
+		yMnemonic: string,
+		xUnit: string | null,
+		yUnit: string | null,
+		wellId?: string
+	): import('$lib/charts/types').ChartDataFrame {
+		const depths = new Float64Array(data.length);
+		const xValues = new Float64Array(data.length);
+		const yValues = new Float64Array(data.length);
+
+		for (let i = 0; i < data.length; i++) {
+			depths[i] = data[i].depth;
+			xValues[i] = data[i].xValue;
+			yValues[i] = data[i].yValue;
+		}
+
+		return {
+			id: `crossplot:${xMnemonic}-${yMnemonic}`,
+			name: `${xMnemonic} vs ${yMnemonic}`,
+			source: {
+				type: 'well_curve',
+				wellId
+			},
+			fields: [
+				{
+					name: xMnemonic,
+					type: 'number',
+					values: xValues,
+					unit: xUnit ?? undefined,
+					config: { displayName: xMnemonic }
+				},
+				{
+					name: yMnemonic,
+					type: 'number',
+					values: yValues,
+					unit: yUnit ?? undefined,
+					config: { displayName: yMnemonic }
+				}
+			],
+			length: data.length,
+			meta: {
+				depthInverted: false, // Not a depth plot
+				depthRange: {
+					min: depths[0],
+					max: depths[depths.length - 1]
+				}
+			}
+		};
+	}
+
+	/**
+	 * Create a ChartDataFrame for crossplot with optional Z-axis coloring
+	 */
+	function createCrossPlotFrame(
+		data: Array<{ depth: number; xValue: number; yValue: number; zValue?: number }>,
+		xMnemonic: string,
+		yMnemonic: string,
+		zMnemonic: string | undefined,
+		xUnit: string | null,
+		yUnit: string | null,
+		zUnit: string | null | undefined,
+		colorMode: 'curve' | 'well' | 'none',
+		colorMap: 'viridis' | 'plasma' | 'rainbow' | 'grayscale',
+		wellColor: string,
+		wellId?: string
+	): import('$lib/charts/types').ChartDataFrame {
+		const depths = new Float64Array(data.length);
+		const xValues = new Float64Array(data.length);
+		const yValues = new Float64Array(data.length);
+
+		for (let i = 0; i < data.length; i++) {
+			depths[i] = data[i].depth;
+			xValues[i] = data[i].xValue;
+			yValues[i] = data[i].yValue;
+		}
+
+		const fields: import('$lib/charts/types').ChartField[] = [
+			{
+				name: xMnemonic,
+				type: 'number',
+				values: xValues,
+				unit: xUnit ?? undefined,
+				config: { displayName: xMnemonic }
+			},
+			{
+				name: yMnemonic,
+				type: 'number',
+				values: yValues,
+				unit: yUnit ?? undefined,
+				config: { displayName: yMnemonic }
+			}
+		];
+
+		// Add Z-axis field if coloring by curve
+		if (colorMode === 'curve' && zMnemonic) {
+			const zValues = new Float64Array(data.length);
+			for (let i = 0; i < data.length; i++) {
+				zValues[i] = data[i].zValue ?? NaN;
+			}
+			fields.push({
+				name: zMnemonic,
+				type: 'number',
+				values: zValues,
+				unit: zUnit ?? undefined,
+				config: { displayName: zMnemonic }
+			});
+		}
+
+		return {
+			id: `crossplot:${xMnemonic}-${yMnemonic}${zMnemonic ? `-${zMnemonic}` : ''}`,
+			name: `${xMnemonic} vs ${yMnemonic}${zMnemonic ? ` (${zMnemonic})` : ''}`,
+			source: {
+				type: 'well_curve',
+				wellId
+			},
+			fields,
+			length: data.length,
+			meta: {
+				depthInverted: false, // Not a depth plot - crossplot uses standard X-Y orientation
+				crossplot: true, // Mark as crossplot for EChartsChart to detect
+				colorMode, // How to color the points
+				colorMap, // Color map for Z-axis coloring
+				wellColor, // Color to use if colorMode is 'well'
+				zMnemonic, // Name of the Z-axis curve for color dimension
+				depthRange: {
+					min: depths[0],
+					max: depths[depths.length - 1]
+				}
+			}
+		};
 	}
 
 	/**
@@ -492,35 +890,122 @@
 						required
 						onChange={(binding) => updateAxis('yAxis', binding)}
 					/>
+				</div>
 
-					<CurveSelector
-						label="Z Axis (Color)"
-						binding={crossConfig.zAxis ?? { curveId: null, autoScale: true }}
-						{curves}
-						{well}
-						onChange={(binding) => updateAxis('zAxis', binding)}
-					/>
+				<div class="config-section">
+					<h4 class="section-title">Color Coding</h4>
+
+					<div class="field-group">
+						<label class="field-label">Color By</label>
+						<select
+							class="field-select"
+							value={crossConfig.colorMode}
+							onchange={(e) => {
+								const newMode = e.currentTarget.value as 'curve' | 'well' | 'none';
+								const newConfig = { ...crossConfig, colorMode: newMode };
+								// Auto-assign well color if switching to 'well' mode
+								if (newMode === 'well' && !crossConfig.wellColor) {
+									newConfig.wellColor = getRandomWellColor();
+								}
+								onConfigChange(newConfig);
+								// Trigger data reload to update frame metadata
+								loadChartData(newConfig);
+							}}
+						>
+							<option value="none">Uniform Color</option>
+							<option value="curve">Z-Axis Curve</option>
+							<option value="well">Well</option>
+						</select>
+					</div>
+
+					{#if crossConfig.colorMode === 'curve'}
+						<CurveSelector
+							label="Z Axis (Color)"
+							binding={crossConfig.zAxis ?? { curveId: null, autoScale: true }}
+							{curves}
+							{well}
+							required
+							onChange={(binding) => updateAxis('zAxis', binding)}
+						/>
+
+						<div class="field-group">
+							<label class="field-label">Color Map</label>
+							<select
+								class="field-select"
+								value={crossConfig.colorMap}
+								onchange={(e) => {
+									const newConfig = {
+										...crossConfig,
+										colorMap: e.currentTarget.value as 'viridis' | 'plasma' | 'rainbow' | 'grayscale',
+									};
+									onConfigChange(newConfig);
+									// Reload data to update frame metadata with new color map
+									loadChartData(newConfig);
+								}}
+							>
+								<option value="viridis">Viridis</option>
+								<option value="plasma">Plasma</option>
+								<option value="rainbow">Rainbow</option>
+								<option value="grayscale">Grayscale</option>
+							</select>
+						</div>
+					{/if}
+
+					{#if crossConfig.colorMode === 'well'}
+						<div class="field-group">
+							<label class="field-label">Well Color</label>
+							<div class="color-presets">
+								{#each COLOR_PRESETS as color}
+									<button
+										type="button"
+										class="color-preset"
+										class:selected={crossConfig.wellColor === color}
+										style="background-color: {color}"
+										onclick={() => {
+											const newConfig = { ...crossConfig, wellColor: color };
+											onConfigChange(newConfig);
+											loadChartData(newConfig);
+										}}
+										aria-label="Select color {color}"
+									></button>
+								{/each}
+							</div>
+						</div>
+					{/if}
+
+					{#if crossConfig.colorMode === 'none'}
+						<div class="field-group">
+							<label class="field-label">Point Color</label>
+							<div class="color-presets">
+								{#each COLOR_PRESETS as color}
+									<button
+										type="button"
+										class="color-preset"
+										class:selected={crossConfig.style.color === color}
+										style="background-color: {color}"
+										onclick={() => updateStyle('color', color)}
+										aria-label="Select color {color}"
+									></button>
+								{/each}
+							</div>
+						</div>
+					{/if}
 				</div>
 
 				<div class="config-section">
 					<h4 class="section-title">Style</h4>
 
 					<div class="field-group">
-						<label class="field-label">Color Map</label>
-						<select
-							class="field-select"
-							value={crossConfig.colorMap}
-							onchange={(e) =>
-								onConfigChange({
-									...crossConfig,
-									colorMap: e.currentTarget.value as 'viridis' | 'plasma' | 'rainbow' | 'grayscale',
-								})}
-						>
-							<option value="viridis">Viridis</option>
-							<option value="plasma">Plasma</option>
-							<option value="rainbow">Rainbow</option>
-							<option value="grayscale">Grayscale</option>
-						</select>
+						<label class="field-label" for="crossplot-point-size">Point Size</label>
+						<input
+							id="crossplot-point-size"
+							type="number"
+							class="field-input small"
+							min="2"
+							max="20"
+							value={crossConfig.style.pointSize}
+							onchange={(e) => updateStyle('pointSize', parseInt(e.currentTarget.value))}
+						/>
 					</div>
 
 					<label class="checkbox-label">

@@ -72,6 +72,16 @@ export interface DataFrameMeta {
 	preferredChartType?: ChartType;
 	depthInverted?: boolean;
 	depthRange?: { min: number; max: number };
+	/** Mark as crossplot data */
+	crossplot?: boolean;
+	/** Color mode for crossplot: 'curve' uses Z-axis, 'well' uses well color, 'none' for uniform color */
+	colorMode?: 'curve' | 'well' | 'none';
+	/** Well color for crossplot when colorMode is 'well' */
+	wellColor?: string;
+	/** Z-axis curve mnemonic for crossplot color dimension */
+	zMnemonic?: string;
+	/** Color map name for crossplot Z-axis coloring */
+	colorMap?: 'viridis' | 'plasma' | 'rainbow' | 'grayscale';
 }
 
 // ============================================================================

@@ -417,6 +417,14 @@ class WorkspaceManagerImpl {
 	): WorkspaceLayout {
 		const root = layout.root;
 
+		// If root is an empty pane, simply replace it with the new pane
+		if (isPaneNode(root) && root.paneType === PaneType.Empty) {
+			return {
+				...layout,
+				root: paneNode,
+			};
+		}
+
 		// If root is a single pane, convert to split or tab
 		if (isPaneNode(root)) {
 			if (position === 'tab') {

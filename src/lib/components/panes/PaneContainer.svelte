@@ -75,6 +75,32 @@
 	/** Current drop segment for this pane */
 	let dropSegment = $derived<DropSegment | null>(isDropTarget ? $dragState.dropSegment : null);
 
+	/** Extract chart config reactively from pane */
+	let chartConfig = $derived(pane.config.chartConfig as ChartConfiguration | undefined);
+
+	/** Extract chart data reactively from pane */
+	let chartData = $derived.by(() => {
+		const data = pane.config.chartData as import('$lib/charts/types').ChartDataFrame | undefined;
+		console.log('[PaneContainer] chartData derived:', pane.id, data ? `${data.length} points` : 'undefined');
+		return data;
+	});
+
+	/** Extract series config for EChartsChart */
+	let seriesConfig = $derived.by(() => {
+		if (!chartConfig) return undefined;
+		// Extract style from config to pass as series override
+		const config = chartConfig as { style?: { color?: string; lineWidth?: number; pointSize?: number } };
+		if (config.style) {
+			return [{
+				field: '', // Will apply to all series
+				color: config.style.color,
+				width: config.style.lineWidth,
+				pointSize: config.style.pointSize
+			}];
+		}
+		return undefined;
+	});
+
 	/**
 	 * Handle pane focus - also updates selection context
 	 */
@@ -110,20 +136,6 @@
 
 		// Start drag operation
 		dragDropContext.startDrag(pane, event.clientX, event.clientY);
-	}
-
-	/**
-	 * Handle split actions from toolbar
-	 */
-	function handleSplit(direction: 'left' | 'right' | 'top' | 'bottom'): void {
-		workspaceManager.splitPane(pane.id, direction);
-	}
-
-	/**
-	 * Handle add tab action
-	 */
-	function handleAddTab(): void {
-		workspaceManager.addTab(pane.id, PaneType.Empty);
 	}
 
 	/**
@@ -259,31 +271,6 @@
 		</div>
 
 		<div class="pane-toolbar">
-			<!-- Split buttons -->
-			<button
-				class="pane-toolbar-button"
-				aria-label="Split right"
-				title="Split right"
-				onclick={() => handleSplit('right')}
-			>
-				<svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
-					<rect x="1" y="1" width="5" height="12" rx="1" />
-					<rect x="8" y="1" width="5" height="12" rx="1" opacity="0.5" />
-				</svg>
-			</button>
-
-			<button
-				class="pane-toolbar-button"
-				aria-label="Split down"
-				title="Split down"
-				onclick={() => handleSplit('bottom')}
-			>
-				<svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
-					<rect x="1" y="1" width="12" height="5" rx="1" />
-					<rect x="1" y="8" width="12" height="5" rx="1" opacity="0.5" />
-				</svg>
-			</button>
-
 			<!-- Close button -->
 			{#if pane.closable !== false}
 				<button
@@ -302,16 +289,20 @@
 
 	<!-- Pane Content -->
 	<div class="pane-content" bind:this={contentEl}>
-		{#if pane.paneType === PaneType.LineChart || pane.paneType === PaneType.ScatterChart || pane.paneType === PaneType.WellLog}
+		{#if pane.paneType === PaneType.LineChart || pane.paneType === PaneType.ScatterChart || pane.paneType === PaneType.CrossPlot || pane.paneType === PaneType.WellLog}
 			<!-- Render chart using EChartsChart component -->
-			<!-- Data would be bound via pane.config -->
+			<!-- chartConfig and chartData are extracted reactively via $derived -->
 			<div class="pane-chart-wrapper">
 				<EChartsChart
 					id={pane.id}
-					data={null}
-					type={pane.paneType === PaneType.ScatterChart ? 'scatter' : 'line'}
+					data={chartData ?? null}
+					type={pane.paneType === PaneType.ScatterChart || pane.paneType === PaneType.CrossPlot ? 'scatter' : 'line'}
 					height={height - 36}
-					linkGroup={pane.config.linkedGroup}
+					title={chartConfig?.title}
+					series={seriesConfig}
+					showCursor={chartConfig?.showCursor ?? true}
+					enableZoom={chartConfig?.enableZoom ?? true}
+					linkGroup={chartConfig?.linkedGroup ?? pane.config.linkedGroup}
 				/>
 			</div>
 		{:else if pane.paneType === PaneType.LinkedCharts}

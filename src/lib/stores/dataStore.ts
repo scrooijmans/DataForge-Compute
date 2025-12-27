@@ -180,20 +180,26 @@ export async function loadCurves(wellId: string): Promise<void> {
  * Load curve data by ID.
  */
 export async function loadCurveData(curveId: string): Promise<CurveData | null> {
+	console.log('[dataStore] loadCurveData called with curveId:', curveId);
+
 	// Check cache first
 	const cache = get(curveDataCache);
 	if (cache.has(curveId)) {
+		console.log('[dataStore] Returning cached data for:', curveId);
 		return cache.get(curveId)!;
 	}
 
 	try {
+		console.log('[dataStore] Invoking get_curve_data for:', curveId);
 		const result = await invoke<CurveData>('get_curve_data', { curveId });
+		console.log('[dataStore] get_curve_data result:', result ? `${result.data?.length ?? 0} points` : 'null');
 		curveDataCache.update((c) => {
 			c.set(curveId, result);
 			return c;
 		});
 		return result;
 	} catch (error) {
+		console.error('[dataStore] get_curve_data error:', error);
 		lastError.set(error instanceof Error ? error.message : String(error));
 		return null;
 	}

@@ -38,13 +38,22 @@
 
 	/** Available pane types for adding */
 	const paneTypes = [
-		{ type: PaneType.LineChart, label: 'Line Chart', icon: 'chart-line' },
-		{ type: PaneType.ScatterChart, label: 'Scatter Chart', icon: 'chart-scatter' },
-		{ type: PaneType.Histogram, label: 'Histogram', icon: 'chart-bar' },
-		{ type: PaneType.WellLog, label: 'Well Log', icon: 'chart-welllog' },
-		{ type: PaneType.LinkedCharts, label: 'Linked Charts', icon: 'chart-linked' },
-		{ type: PaneType.DataGrid, label: 'Data Grid', icon: 'table' },
+		{ type: PaneType.LineChart, label: 'Line Chart' },
+		{ type: PaneType.ScatterChart, label: 'Scatter Chart' },
+		{ type: PaneType.Histogram, label: 'Histogram' },
+		{ type: PaneType.WellLog, label: 'Well Log' },
+		{ type: PaneType.LinkedCharts, label: 'Linked Charts' },
+		{ type: PaneType.DataGrid, label: 'Data Grid' },
 	];
+
+	/** Check if workspace is empty (no panes or only empty pane) */
+	let isEmpty = $derived.by(() => {
+		if (!$layout) return true;
+		const root = $layout.root;
+		// Empty if root is a single empty pane
+		if (root.type === 'pane' && root.paneType === PaneType.Empty) return true;
+		return false;
+	});
 
 	/**
 	 * Save layout to localStorage
@@ -155,13 +164,12 @@
 
 				{#if showAddMenu}
 					<div class="add-menu" role="menu">
-						{#each paneTypes as { type, label, icon }}
+						{#each paneTypes as { type, label }}
 							<button
 								class="add-menu-item"
 								role="menuitem"
 								onclick={() => handleAddPane(type)}
 							>
-								<span class="add-menu-icon">{icon}</span>
 								<span>{label}</span>
 							</button>
 						{/each}
@@ -182,7 +190,17 @@
 
 	<!-- Layout Content -->
 	<div class="workspace-content">
-		{#if $layout}
+		{#if isEmpty}
+			<!-- Empty workspace placeholder -->
+			<div class="workspace-empty">
+				<svg width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5">
+					<rect x="6" y="6" width="36" height="36" rx="4" opacity="0.3" />
+					<path d="M24 16v16M16 24h16" opacity="0.5" />
+				</svg>
+				<h3>No Charts Open</h3>
+				<p>Click <strong>Add Pane</strong> to add a chart to your workspace</p>
+			</div>
+		{:else if $layout}
 			<LayoutRenderer node={$layout.root} />
 		{/if}
 	</div>
@@ -311,15 +329,42 @@
 		outline-offset: -2px;
 	}
 
-	.add-menu-icon {
-		width: 16px;
-		height: 16px;
-		color: var(--color-text-secondary, #6b7280);
-	}
-
 	.workspace-content {
 		flex: 1;
 		overflow: hidden;
 		padding: 4px;
+	}
+
+	.workspace-empty {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		height: 100%;
+		color: var(--color-text-tertiary, #9ca3af);
+		text-align: center;
+		padding: 24px;
+	}
+
+	.workspace-empty svg {
+		margin-bottom: 16px;
+		color: var(--color-text-tertiary, #9ca3af);
+	}
+
+	.workspace-empty h3 {
+		margin: 0 0 8px 0;
+		font-size: 16px;
+		font-weight: 600;
+		color: var(--color-text-secondary, #6b7280);
+	}
+
+	.workspace-empty p {
+		margin: 0;
+		font-size: 14px;
+		color: var(--color-text-tertiary, #9ca3af);
+	}
+
+	.workspace-empty strong {
+		color: var(--color-text, #111827);
 	}
 </style>

@@ -496,8 +496,10 @@ pub fn get_curve_data(
     let duckdb = DuckDbConnection::open_in_memory()
         .map_err(|e| format!("Failed to create DuckDB connection: {}", e))?;
 
+    // Parquet columns are DEPTH and the mnemonic (e.g., "GR", "RESISTIVITY")
     let query = format!(
-        "SELECT depth, value FROM read_parquet('{}') ORDER BY depth",
+        "SELECT DEPTH, \"{}\" FROM read_parquet('{}') ORDER BY DEPTH",
+        mnemonic.replace('"', "\"\""),
         blob_path.to_string_lossy().replace('\'', "''")
     );
 
