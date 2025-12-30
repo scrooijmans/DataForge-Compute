@@ -75,15 +75,14 @@
 	/** Current drop segment for this pane */
 	let dropSegment = $derived<DropSegment | null>(isDropTarget ? $dragState.dropSegment : null);
 
-	/** Extract chart config reactively from pane */
-	let chartConfig = $derived(pane.config.chartConfig as ChartConfiguration | undefined);
+	/** Extract chart config reactively from pane - with defensive null check */
+	let chartConfig = $derived(pane?.config?.chartConfig as ChartConfiguration | undefined);
 
-	/** Extract chart data reactively from pane */
-	let chartData = $derived.by(() => {
-		const data = pane.config.chartData as import('$lib/charts/types').ChartDataFrame | undefined;
-		console.log('[PaneContainer] chartData derived:', pane.id, data ? `${data.length} points` : 'undefined');
-		return data;
-	});
+	/** Extract chart data reactively from pane - with defensive null check */
+	let chartData = $derived(pane?.config?.chartData as import('$lib/charts/types').ChartDataFrame | undefined);
+
+	/** Extract segmented chart data reactively from pane (new segment-based architecture) */
+	let segmentedChartData = $derived(pane?.config?.segmentedChartData as import('$lib/types').SegmentedCurveData | undefined);
 
 	/** Extract series config for EChartsChart */
 	let seriesConfig = $derived.by(() => {
@@ -101,15 +100,23 @@
 		return undefined;
 	});
 
+	/** Extract showRegression from crossplot config */
+	let showRegression = $derived.by(() => {
+		if (!chartConfig) return false;
+		const config = chartConfig as { type?: string; showRegression?: boolean };
+		return config.type === 'crossplot' && config.showRegression === true;
+	});
+
 	/**
 	 * Handle pane focus - also updates selection context
 	 */
 	function handleFocus(): void {
+		if (!pane) return;
 		workspaceManager.activatePane(pane.id);
 
 		// Update selection context to show chart config in toolbar
-		const chartConfig = pane.config.chartConfig as ChartConfiguration | undefined;
-		selectionContext.selectPane(pane.id, pane, chartConfig);
+		const config = pane.config?.chartConfig as ChartConfiguration | undefined;
+		selectionContext.selectPane(pane.id, pane, config);
 	}
 
 	/**
@@ -289,20 +296,22 @@
 
 	<!-- Pane Content -->
 	<div class="pane-content" bind:this={contentEl}>
-		{#if pane.paneType === PaneType.LineChart || pane.paneType === PaneType.ScatterChart || pane.paneType === PaneType.CrossPlot || pane.paneType === PaneType.WellLog}
+		{#if pane.paneType === PaneType.LineChart || pane.paneType === PaneType.ScatterChart || pane.paneType === PaneType.CrossPlot || pane.paneType === PaneType.WellLog || pane.paneType === PaneType.Histogram}
 			<!-- Render chart using EChartsChart component -->
-			<!-- chartConfig and chartData are extracted reactively via $derived -->
+			<!-- chartConfig, chartData, and segmentedChartData are extracted reactively via $derived -->
 			<div class="pane-chart-wrapper">
 				<EChartsChart
 					id={pane.id}
 					data={chartData ?? null}
-					type={pane.paneType === PaneType.ScatterChart || pane.paneType === PaneType.CrossPlot ? 'scatter' : 'line'}
+					segmentedData={segmentedChartData ?? null}
+					type={pane.paneType === PaneType.Histogram ? 'histogram' : (pane.paneType === PaneType.WellLog ? 'welllog' : (pane.paneType === PaneType.ScatterChart || pane.paneType === PaneType.CrossPlot ? 'scatter' : 'line'))}
 					height={height - 36}
 					title={chartConfig?.title}
 					series={seriesConfig}
 					showCursor={chartConfig?.showCursor ?? true}
 					enableZoom={chartConfig?.enableZoom ?? true}
-					linkGroup={chartConfig?.linkedGroup ?? pane.config.linkedGroup}
+					linkGroup={chartConfig?.linkedGroup ?? pane.config?.linkedGroup}
+					{showRegression}
 				/>
 			</div>
 		{:else if pane.paneType === PaneType.LinkedCharts}
@@ -312,11 +321,11 @@
 			<!-- Render table pane for UDF output -->
 			<TablePane
 				config={{
-					mnemonic: pane.config.options?.mnemonic as string | undefined,
-					unit: pane.config.options?.unit as string | undefined,
-					executionId: pane.config.options?.executionId as string | undefined,
-					udfName: pane.config.options?.udfName as string | undefined,
-					data: pane.config.options?.data as import('$lib/types').CurveDataPoint[] | undefined
+					mnemonic: pane.config?.options?.mnemonic as string | undefined,
+					unit: pane.config?.options?.unit as string | undefined,
+					executionId: pane.config?.options?.executionId as string | undefined,
+					udfName: pane.config?.options?.udfName as string | undefined,
+					data: pane.config?.options?.data as import('$lib/types').CurveDataPoint[] | undefined
 				}}
 				height={height - 36}
 			/>

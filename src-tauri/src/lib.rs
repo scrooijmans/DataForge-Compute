@@ -25,6 +25,7 @@ pub fn run() {
             commands::list_curves,
             commands::list_all_curves_for_workspace,
             commands::get_curve_data,
+            commands::get_curve_data_segmented,  // OSDU-inspired segment-based access
             // Legacy computations (to be deprecated)
             commands::compute_moving_average,
             // UDF system

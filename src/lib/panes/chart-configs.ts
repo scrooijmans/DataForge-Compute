@@ -216,27 +216,25 @@ export interface WellLogCurveConfig {
 /**
  * Well Log (Linked Charts) Configuration
  *
- * Multi-track well log display with shared depth axis.
- * Always has depth on Y-axis (inverted), shared across all tracks.
+ * Single-track well log display with depth on Y-axis.
+ * Displays one curve against the depth track from the same well/parquet file.
  */
 export interface WellLogConfig extends CommonChartOptions {
 	type: 'welllog';
-	/** Tracks configuration */
-	tracks: WellLogTrackConfig[];
+	/** Curve to plot (Y-axis values, X-axis in display since depth is on Y) */
+	curve: AxisBinding;
+	/** Series styling */
+	style: SeriesStyle;
 	/** Depth range */
 	depthRange: {
 		min: number | null;
 		max: number | null;
 		autoScale: boolean;
 	};
-	/** Depth axis inverted (typically true for well logs) */
+	/** Depth axis inverted (typically true for well logs - depth increases downward) */
 	depthInverted: boolean;
-	/** Track separator width */
-	trackSeparatorWidth: number;
-	/** Show depth track */
+	/** Show depth track labels */
 	showDepthTrack: boolean;
-	/** Depth track width */
-	depthTrackWidth: number;
 }
 
 /**
@@ -344,16 +342,15 @@ export function createDefaultWellLogConfig(): WellLogConfig {
 	return {
 		...DEFAULT_COMMON_OPTIONS,
 		type: 'welllog',
-		tracks: [],
+		curve: { ...DEFAULT_AXIS_BINDING },
+		style: { ...DEFAULT_SERIES_STYLE },
 		depthRange: {
 			min: null,
 			max: null,
 			autoScale: true,
 		},
 		depthInverted: true,
-		trackSeparatorWidth: 2,
 		showDepthTrack: true,
-		depthTrackWidth: 60,
 	};
 }
 

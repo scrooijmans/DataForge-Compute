@@ -13,6 +13,7 @@ import type {
 	WellInfo,
 	CurveInfo,
 	CurveData,
+	SegmentedCurveData,
 	ProviderInfo,
 	UdfInfo,
 	ExecuteUdfResult
@@ -38,8 +39,11 @@ export const wells: Writable<WellInfo[]> = writable([]);
 // Curve data (for current well)
 export const curves: Writable<CurveInfo[]> = writable([]);
 
-// Loaded curve data cache
+// Loaded curve data cache (legacy - array with nulls)
 const curveDataCache: Writable<Map<string, CurveData>> = writable(new Map());
+
+// Segmented curve data cache (new - segments without nulls)
+const segmentedCurveCache: Writable<Map<string, SegmentedCurveData>> = writable(new Map());
 
 // UDF providers and definitions
 export const providers: Writable<ProviderInfo[]> = writable([]);
@@ -79,10 +83,30 @@ export const currentCurveData: Readable<CurveData | null> = derived(
 		$selection.activeCurveId ? $cache.get($selection.activeCurveId) ?? null : null
 );
 
+export const currentSegmentedCurveData: Readable<SegmentedCurveData | null> = derived(
+	[segmentedCurveCache, selectionStore],
+	([$cache, $selection]) =>
+		$selection.activeCurveId ? $cache.get($selection.activeCurveId) ?? null : null
+);
+
 export const selectedCurvesData: Readable<Map<string, CurveData>> = derived(
 	[curveDataCache, selectionStore],
 	([$cache, $selection]) => {
 		const result = new Map<string, CurveData>();
+		for (const curveId of $selection.selectedCurveIds) {
+			const data = $cache.get(curveId);
+			if (data) {
+				result.set(curveId, data);
+			}
+		}
+		return result;
+	}
+);
+
+export const selectedSegmentedCurvesData: Readable<Map<string, SegmentedCurveData>> = derived(
+	[segmentedCurveCache, selectionStore],
+	([$cache, $selection]) => {
+		const result = new Map<string, SegmentedCurveData>();
 		for (const curveId of $selection.selectedCurveIds) {
 			const data = $cache.get(curveId);
 			if (data) {
@@ -206,6 +230,58 @@ export async function loadCurveData(curveId: string): Promise<CurveData | null> 
 }
 
 /**
+ * Load segmented curve data by ID.
+ *
+ * This uses the new segment-based architecture where curves are represented
+ * as a set of valid segments (no nulls), rather than arrays with missing data.
+ * Segments are extracted at query time in the Rust backend.
+ *
+ * @param curveId - The curve ID to load
+ * @param minSegmentPoints - Minimum points for a segment to be included (default: 2)
+ * @returns Segmented curve data or null on error
+ */
+export async function loadSegmentedCurveData(
+	curveId: string,
+	minSegmentPoints: number = 2
+): Promise<SegmentedCurveData | null> {
+	console.log('[dataStore] loadSegmentedCurveData called with curveId:', curveId);
+
+	// Check cache first
+	const cache = get(segmentedCurveCache);
+	if (cache.has(curveId)) {
+		console.log('[dataStore] Returning cached segmented data for:', curveId);
+		return cache.get(curveId)!;
+	}
+
+	try {
+		console.log('[dataStore] Invoking get_curve_data_segmented for:', curveId);
+		const result = await invoke<SegmentedCurveData>('get_curve_data_segmented', {
+			curveId,
+			minSegmentPoints
+		});
+
+		console.log(
+			'[dataStore] get_curve_data_segmented result:',
+			result
+				? `${result.segments.length} segments, ${result.total_points} total points`
+				: 'null'
+		);
+
+		// Cache the result
+		segmentedCurveCache.update((c) => {
+			c.set(curveId, result);
+			return c;
+		});
+
+		return result;
+	} catch (error) {
+		console.error('[dataStore] get_curve_data_segmented error:', error);
+		lastError.set(error instanceof Error ? error.message : String(error));
+		return null;
+	}
+}
+
+/**
  * Load providers.
  */
 export async function loadProviders(): Promise<void> {
@@ -295,10 +371,18 @@ export function clearError(): void {
 }
 
 /**
- * Clear curve data cache.
+ * Clear curve data cache (both legacy and segmented).
  */
 export function clearCurveCache(): void {
 	curveDataCache.set(new Map());
+	segmentedCurveCache.set(new Map());
+}
+
+/**
+ * Clear only segmented curve cache.
+ */
+export function clearSegmentedCurveCache(): void {
+	segmentedCurveCache.set(new Map());
 }
 
 /**
@@ -306,4 +390,11 @@ export function clearCurveCache(): void {
  */
 export function getCachedCurveData(curveId: string): CurveData | undefined {
 	return get(curveDataCache).get(curveId);
+}
+
+/**
+ * Get segmented curve data from cache without loading.
+ */
+export function getCachedSegmentedCurveData(curveId: string): SegmentedCurveData | undefined {
+	return get(segmentedCurveCache).get(curveId);
 }

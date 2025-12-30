@@ -31,8 +31,9 @@
 		getChartTypeName,
 	} from '$lib/panes/chart-configs';
 	import CurveSelector from './CurveSelector.svelte';
-	import { loadCurveData } from '$lib/stores/dataStore';
+	import { loadCurveData, loadSegmentedCurveData } from '$lib/stores/dataStore';
 	import { curveDataToFrame, type ChartDataFrame } from '$lib/charts/types';
+	import type { SegmentedCurveData } from '$lib/types';
 
 	interface Props {
 		/** Selected pane node */
@@ -49,11 +50,13 @@
 		onWellChange?: (wellId: string) => void;
 		/** Callback when configuration changes */
 		onConfigChange: (config: ChartConfiguration) => void;
-		/** Callback when chart data changes */
+		/** Callback when chart data changes (legacy ChartDataFrame format) */
 		onDataChange?: (data: ChartDataFrame | null) => void;
+		/** Callback when segmented chart data changes (new segment-based format) */
+		onSegmentedDataChange?: (data: SegmentedCurveData | null) => void;
 	}
 
-	let { pane, config, wells, curves, well, onWellChange, onConfigChange, onDataChange }: Props = $props();
+	let { pane, config, wells, curves, well, onWellChange, onConfigChange, onDataChange, onSegmentedDataChange }: Props = $props();
 
 	/** Loading state for curve data */
 	let isLoadingData = $state(false);
@@ -491,11 +494,104 @@
 	 * Update style property
 	 */
 	function updateStyle<K extends keyof SeriesStyle>(key: K, value: SeriesStyle[K]): void {
-		const currentConfig = chartConfig as LineChartConfig | ScatterChartConfig | HistogramConfig;
+		const currentConfig = chartConfig as LineChartConfig | ScatterChartConfig | HistogramConfig | WellLogConfig;
 		onConfigChange({
 			...currentConfig,
 			style: { ...currentConfig.style, [key]: value },
 		} as ChartConfiguration);
+	}
+
+	/**
+	 * Update well log curve binding and load data
+	 */
+	async function updateWellLogCurve(binding: AxisBinding): Promise<void> {
+		console.log('[ChartConfigPanel] updateWellLogCurve called:', binding);
+		const wellLogConfig = chartConfig as WellLogConfig;
+		const newConfig = { ...wellLogConfig, curve: binding };
+		onConfigChange(newConfig);
+
+		// Load the well log data
+		await loadWellLogData(newConfig);
+	}
+
+	/**
+	 * Load well log data - curve plotted against depth
+	 * Creates a ChartDataFrame with depth on the first field (will be Y-axis)
+	 * and curve values on the second field (will be X-axis in well log display)
+	 *
+	 * NEW: Also loads segmented curve data (OSDU-inspired architecture)
+	 * Segmented data eliminates null handling - each segment is contiguous valid data
+	 */
+	async function loadWellLogData(currentConfig: WellLogConfig): Promise<void> {
+		const curveId = currentConfig.curve?.curveId;
+
+		console.log('[ChartConfigPanel] loadWellLogData:', { curveId });
+
+		if (!curveId) {
+			console.log('[ChartConfigPanel] No curve selected for well log');
+			onDataChange?.(null);
+			onSegmentedDataChange?.(null);
+			return;
+		}
+
+		isLoadingData = true;
+
+		try {
+			// Load both legacy and segmented data in parallel
+			const [curveData, segmentedData] = await Promise.all([
+				loadCurveData(curveId),
+				loadSegmentedCurveData(curveId)
+			]);
+
+			// Handle segmented data (new architecture - preferred path)
+			if (segmentedData && segmentedData.segments.length > 0) {
+				console.log('[ChartConfigPanel] Loaded segmented data:', {
+					curveId: segmentedData.curve_id,
+					mnemonic: segmentedData.mnemonic,
+					segmentCount: segmentedData.segments.length,
+					totalPoints: segmentedData.total_points,
+					depthRange: segmentedData.depth_range
+				});
+				onSegmentedDataChange?.(segmentedData);
+			} else {
+				onSegmentedDataChange?.(null);
+			}
+
+			// Handle legacy data (backward compatibility)
+			if (!curveData || curveData.data.length === 0) {
+				console.log('[ChartConfigPanel] No curve data for well log');
+				onDataChange?.(null);
+				return;
+			}
+
+			// Create frame with depth as first field (Y-axis in well log) and curve as second field (X-axis)
+			const frame = curveDataToFrame(curveData.data, curveData.mnemonic, {
+				type: 'well_curve',
+				wellId: well?.id,
+				curveId: curveId
+			});
+
+			// Add unit info if available
+			if (curveData.unit && frame.fields[1]) {
+				frame.fields[1].unit = curveData.unit;
+			}
+
+			// Set metadata for well log display
+			frame.meta = {
+				...frame.meta,
+				depthInverted: currentConfig.depthInverted,
+				preferredChartType: 'welllog',
+			};
+
+			console.log('[ChartConfigPanel] Created well log frame:', { id: frame.id, length: frame.length });
+			onDataChange?.(frame);
+		} catch (error) {
+			console.error('[ChartConfigPanel] Failed to load well log data:', error);
+			onDataChange?.(null);
+			onSegmentedDataChange?.(null);
+		} finally {
+			isLoadingData = false;
+		}
 	}
 </script>
 
@@ -1024,6 +1120,19 @@
 			{#if chartConfig.type === 'welllog'}
 				{@const wellLogConfig = chartConfig as WellLogConfig}
 				<div class="config-section">
+					<h4 class="section-title">Data Binding</h4>
+
+					<CurveSelector
+						label="Curve"
+						binding={wellLogConfig.curve}
+						{curves}
+						{well}
+						required
+						onChange={(binding) => updateWellLogCurve(binding)}
+					/>
+				</div>
+
+				<div class="config-section">
 					<h4 class="section-title">Depth Settings</h4>
 
 					<label class="checkbox-label">
@@ -1088,20 +1197,6 @@
 						/>
 						<span>Invert Depth (Increasing Downward)</span>
 					</label>
-				</div>
-
-				<div class="config-section">
-					<h4 class="section-title">Tracks</h4>
-
-					<div class="tracks-info">
-						<p>{wellLogConfig.tracks.length} track(s) configured</p>
-						<button type="button" class="add-track-button">
-							<svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
-								<path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="2" fill="none" />
-							</svg>
-							Add Track
-						</button>
-					</div>
 
 					<label class="checkbox-label">
 						<input
@@ -1111,6 +1206,48 @@
 								onConfigChange({ ...wellLogConfig, showDepthTrack: e.currentTarget.checked })}
 						/>
 						<span>Show Depth Track</span>
+					</label>
+				</div>
+
+				<div class="config-section">
+					<h4 class="section-title">Style</h4>
+
+					<div class="field-group">
+						<label class="field-label">Color</label>
+						<div class="color-presets">
+							{#each COLOR_PRESETS as color}
+								<button
+									type="button"
+									class="color-preset"
+									class:selected={wellLogConfig.style.color === color}
+									style="background-color: {color}"
+									onclick={() => updateStyle('color', color)}
+									aria-label="Select color {color}"
+								></button>
+							{/each}
+						</div>
+					</div>
+
+					<div class="field-group">
+						<label class="field-label" for="welllog-line-width">Line Width</label>
+						<input
+							id="welllog-line-width"
+							type="number"
+							class="field-input small"
+							min="1"
+							max="10"
+							value={wellLogConfig.style.lineWidth}
+							onchange={(e) => updateStyle('lineWidth', parseInt(e.currentTarget.value))}
+						/>
+					</div>
+
+					<label class="checkbox-label">
+						<input
+							type="checkbox"
+							checked={wellLogConfig.style.fillArea}
+							onchange={(e) => updateStyle('fillArea', e.currentTarget.checked)}
+						/>
+						<span>Fill Area</span>
 					</label>
 				</div>
 			{/if}
@@ -1258,35 +1395,5 @@
 
 	.color-preset.selected {
 		border-color: var(--color-text, #111827);
-	}
-
-	.tracks-info {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		margin-bottom: 12px;
-	}
-
-	.tracks-info p {
-		font-size: 13px;
-		color: var(--color-text-secondary, #6b7280);
-		margin: 0;
-	}
-
-	.add-track-button {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		padding: 6px 12px;
-		border: 1px solid var(--color-border, #e5e7eb);
-		border-radius: 6px;
-		background: var(--color-bg, #ffffff);
-		font-size: 12px;
-		cursor: pointer;
-		transition: background-color 0.15s ease;
-	}
-
-	.add-track-button:hover {
-		background: var(--color-bg-hover, #f3f4f6);
 	}
 </style>

@@ -14,6 +14,7 @@
 	import { workspaceManager, PaneType } from '$lib/panes/workspace-manager';
 	import type { WorkspaceLayout } from '$lib/panes/layout-model';
 	import LayoutRenderer from './LayoutRenderer.svelte';
+	import ChartInteractionBar from '$lib/components/charts/ChartInteractionBar.svelte';
 
 	interface Props {
 		/** Storage key for layout persistence */
@@ -187,6 +188,9 @@
 			</button>
 		</div>
 	</div>
+
+	<!-- Chart Interaction Bar - Always visible, shows cursor mode tools -->
+	<ChartInteractionBar />
 
 	<!-- Layout Content -->
 	<div class="workspace-content">

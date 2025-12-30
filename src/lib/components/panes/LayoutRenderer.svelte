@@ -26,10 +26,12 @@
 	let { node, depth = 0 }: Props = $props();
 </script>
 
-{#if isPaneNode(node)}
-	<PaneContainer pane={node} />
-{:else if isTabNode(node)}
-	<TabContainer tabNode={node} {depth} />
-{:else if isSplitNode(node)}
-	<SplitContainer splitNode={node} {depth} />
+{#if node}
+	{#if isPaneNode(node)}
+		<PaneContainer pane={node} />
+	{:else if isTabNode(node)}
+		<TabContainer tabNode={node} {depth} />
+	{:else if isSplitNode(node)}
+		<SplitContainer splitNode={node} {depth} />
+	{/if}
 {/if}

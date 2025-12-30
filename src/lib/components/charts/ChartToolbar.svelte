@@ -11,11 +11,17 @@
 		disabled?: boolean;
 	}
 
-	type ChartType = 'line' | 'scatter' | 'histogram' | 'crossplot';
+	type ChartType = 'line' | 'scatter' | 'histogram' | 'crossplot' | 'welllog';
 
 	let { onAddChart, disabled = false }: Props = $props();
 
 	const chartTypes: { type: ChartType; label: string; icon: string; description: string }[] = [
+		{
+			type: 'welllog',
+			label: 'Well Log',
+			icon: 'M4 2v20M8 2v20M4 6h4M4 10h4M4 14h4M4 18h4M12 2c0 4 4 4 4 8s-4 4-4 8 4 4 4 8',
+			description: 'Single curve well log (Depth on Y-axis)'
+		},
 		{
 			type: 'line',
 			label: 'Line Chart',

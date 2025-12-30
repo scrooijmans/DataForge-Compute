@@ -11,6 +11,7 @@
  */
 
 import type { ChartConfig, ChartDataFrame } from '../charts/types';
+import type { SegmentedCurveData } from '$lib/types';
 
 // ============================================================================
 // Layout Node Types
@@ -103,8 +104,10 @@ export interface PaneConfig {
 	curveIds?: string[];
 	/** Chart-specific configuration */
 	chartConfig?: ChartConfig;
-	/** Loaded chart data frame for rendering */
+	/** Loaded chart data frame for rendering (legacy format with nulls) */
 	chartData?: ChartDataFrame;
+	/** Segmented chart data for rendering (new segment-based format - no nulls) */
+	segmentedChartData?: SegmentedCurveData;
 	/** Linked group for cursor/viewport sync */
 	linkedGroup?: string;
 	/** Additional pane-specific options */

@@ -42,13 +42,14 @@
 	 * Handle adding a chart from the toolbar
 	 * Creates a new pane of the specified chart type
 	 */
-	function handleAddChart(type: 'line' | 'scatter' | 'histogram' | 'crossplot') {
+	function handleAddChart(type: 'line' | 'scatter' | 'histogram' | 'crossplot' | 'welllog') {
 		// Map toolbar types to pane types
 		const paneTypeMap: Record<string, PaneType> = {
 			line: PaneType.LineChart,
 			scatter: PaneType.ScatterChart,
 			histogram: PaneType.Histogram,
-			crossplot: PaneType.CrossPlot
+			crossplot: PaneType.CrossPlot,
+			welllog: PaneType.WellLog
 		};
 
 		const paneType = paneTypeMap[type] ?? PaneType.LineChart;

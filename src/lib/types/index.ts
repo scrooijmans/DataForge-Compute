@@ -56,6 +56,49 @@ export interface CurveData {
 	data: CurveDataPoint[];
 }
 
+// ==== Segment-Based Curve Types (OSDU-inspired architecture) ====
+
+/**
+ * A contiguous segment of valid (non-null) curve data points.
+ * Segments are extracted at access time in the Rust backend.
+ */
+export interface CurveSegmentData {
+	/** Starting depth of this segment */
+	depth_start: number;
+	/** Ending depth of this segment */
+	depth_end: number;
+	/** Depth values for this segment */
+	depths: number[];
+	/** Measurement values for this segment (all valid, no nulls) */
+	values: number[];
+}
+
+/**
+ * A curve represented as a set of valid segments.
+ *
+ * Key insight: "A curve is a set of valid segments over depth"
+ * rather than "an array of values with missing data".
+ *
+ * Benefits:
+ * - No null handling in frontend chart code
+ * - Reduced data transfer (only valid points cross IPC boundary)
+ * - Automatic gap display (separate series = visual gaps)
+ */
+export interface SegmentedCurveData {
+	/** Curve identifier */
+	curve_id: string;
+	/** Curve mnemonic (e.g., "GR", "RHOB") */
+	mnemonic: string;
+	/** Unit of measurement */
+	unit: string | null;
+	/** Array of contiguous valid data segments */
+	segments: CurveSegmentData[];
+	/** Total depth range across all segments: [min, max] */
+	depth_range: [number, number];
+	/** Total valid point count (sum of all segment lengths) */
+	total_points: number;
+}
+
 // UDF types
 export interface ProviderInfo {
 	id: string;

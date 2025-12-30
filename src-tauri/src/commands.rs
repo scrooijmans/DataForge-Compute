@@ -197,6 +197,41 @@ pub struct CurveData {
     pub data: Vec<CurveDataPoint>,
 }
 
+// ==== Segment-Based Curve Types (OSDU-inspired architecture) ====
+
+/// A contiguous segment of valid (non-null) curve data points.
+/// Segments are extracted at access time, not ingestion time.
+#[derive(Debug, Serialize, Clone)]
+pub struct CurveSegment {
+    /// Starting depth of this segment
+    pub depth_start: f64,
+    /// Ending depth of this segment
+    pub depth_end: f64,
+    /// Depth values for this segment
+    pub depths: Vec<f64>,
+    /// Measurement values for this segment (all valid, no nulls)
+    pub values: Vec<f64>,
+}
+
+/// A curve represented as a set of valid segments.
+/// Key insight: "A curve is a set of valid segments over depth"
+/// rather than "an array of values with missing data".
+#[derive(Debug, Serialize)]
+pub struct SegmentedCurveData {
+    /// Curve identifier
+    pub curve_id: String,
+    /// Curve mnemonic (e.g., "GR", "RHOB")
+    pub mnemonic: String,
+    /// Unit of measurement
+    pub unit: Option<String>,
+    /// Array of contiguous valid data segments
+    pub segments: Vec<CurveSegment>,
+    /// Total depth range across all segments
+    pub depth_range: (f64, f64),
+    /// Total valid point count (sum of all segment lengths)
+    pub total_points: usize,
+}
+
 #[derive(Debug, Serialize)]
 pub struct MovingAverageResult {
     pub input_curve: String,
@@ -523,6 +558,145 @@ pub fn get_curve_data(
         mnemonic,
         unit,
         data,
+    })
+}
+
+/// Get curve data as segments (OSDU-inspired architecture)
+///
+/// Instead of returning raw data with nulls, this extracts contiguous
+/// valid segments at access time. Charts receive only valid data,
+/// making rendering trivial.
+///
+/// Benefits:
+/// - No null handling in frontend chart code
+/// - Reduced data transfer (only valid points cross IPC boundary)
+/// - Automatic gap display (separate series = visual gaps)
+#[tauri::command]
+pub fn get_curve_data_segmented(
+    curve_id: String,
+    min_segment_points: Option<usize>,
+    state: State<'_, Mutex<ComputeState>>,
+) -> Result<SegmentedCurveData, String> {
+    let min_points = min_segment_points.unwrap_or(2);
+
+    let state = state.lock().expect("Failed to lock state");
+    let db = state.db.as_ref().ok_or("Not connected to DataForge")?;
+
+    // Get curve metadata and parquet hash
+    let (mnemonic, unit, parquet_hash): (String, Option<String>, Option<String>) = db
+        .query_row(
+            "SELECT mnemonic, unit, COALESCE(gridded_parquet_hash, native_parquet_hash) FROM curves WHERE id = ?1",
+            [&curve_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|e| format!("Curve not found: {}", e))?;
+
+    let parquet_hash = parquet_hash.ok_or("Curve has no data (no parquet hash)")?;
+
+    // Get blob path
+    let blob_path = state
+        .blob_path(&parquet_hash)
+        .ok_or("DataForge data directory not set")?;
+
+    if !blob_path.exists() {
+        return Err(format!("Parquet blob not found at {:?}", blob_path));
+    }
+
+    // Read parquet with DuckDB
+    let duckdb = DuckDbConnection::open_in_memory()
+        .map_err(|e| format!("Failed to create DuckDB connection: {}", e))?;
+
+    let query = format!(
+        "SELECT DEPTH, \"{}\" FROM read_parquet('{}') ORDER BY DEPTH",
+        mnemonic.replace('"', "\"\""),
+        blob_path.to_string_lossy().replace('\'', "''")
+    );
+
+    let mut stmt = duckdb
+        .prepare(&query)
+        .map_err(|e| format!("DuckDB query error: {}", e))?;
+
+    // Extract segments: split on null/NaN values
+    let mut segments: Vec<CurveSegment> = Vec::new();
+    let mut current_depths: Vec<f64> = Vec::new();
+    let mut current_values: Vec<f64> = Vec::new();
+    let mut global_min_depth = f64::INFINITY;
+    let mut global_max_depth = f64::NEG_INFINITY;
+
+    let rows = stmt
+        .query_map([], |row| {
+            let depth: f64 = row.get(0)?;
+            let value: Option<f64> = row.get(1)?;
+            Ok((depth, value))
+        })
+        .map_err(|e| format!("DuckDB query error: {}", e))?;
+
+    for row_result in rows {
+        let (depth, value) = row_result.map_err(|e| format!("Row error: {}", e))?;
+
+        // Check if value is valid (not null and not NaN)
+        let is_valid = value.map(|v| !v.is_nan()).unwrap_or(false);
+
+        if is_valid {
+            let v = value.unwrap();
+            current_depths.push(depth);
+            current_values.push(v);
+
+            // Track global depth range
+            if depth < global_min_depth {
+                global_min_depth = depth;
+            }
+            if depth > global_max_depth {
+                global_max_depth = depth;
+            }
+        } else {
+            // Null/NaN encountered - close current segment if valid
+            if current_depths.len() >= min_points {
+                segments.push(CurveSegment {
+                    depth_start: current_depths[0],
+                    depth_end: *current_depths.last().unwrap(),
+                    depths: current_depths.clone(),
+                    values: current_values.clone(),
+                });
+            }
+            current_depths.clear();
+            current_values.clear();
+        }
+    }
+
+    // Close final segment
+    if current_depths.len() >= min_points {
+        segments.push(CurveSegment {
+            depth_start: current_depths[0],
+            depth_end: *current_depths.last().unwrap(),
+            depths: current_depths,
+            values: current_values,
+        });
+    }
+
+    // Calculate total points
+    let total_points: usize = segments.iter().map(|s| s.depths.len()).sum();
+
+    // Handle case where no valid data found
+    if segments.is_empty() {
+        global_min_depth = 0.0;
+        global_max_depth = 0.0;
+    }
+
+    info!(
+        "📊 Loaded curve {} as {} segments with {} total points",
+        mnemonic,
+        segments.len(),
+        total_points
+    );
+
+    Ok(SegmentedCurveData {
+        curve_id,
+        mnemonic,
+        unit,
+        segments,
+        depth_range: (global_min_depth, global_max_depth),
+        total_points,
     })
 }
 
@@ -1021,6 +1195,10 @@ pub fn save_output_curve(
     let db_path = data_dir.join("dataforge.db");
     let db = Connection::open(&db_path)
         .map_err(|e| format!("Failed to open database for writing: {}", e))?;
+
+    // Ensure the curves table has the required columns for derived curves
+    crate::compute::output_writer::ensure_derived_curve_columns(&db)
+        .map_err(|e| format!("Failed to ensure derived curve columns: {}", e))?;
 
     let mnemonic = request
         .mnemonic

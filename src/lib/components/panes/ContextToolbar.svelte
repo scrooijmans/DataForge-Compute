@@ -7,7 +7,7 @@
 	 * - Chart pane selected: Shows chart configuration options
 	 * - Nothing selected: Shows placeholder with instructions
 	 */
-	import type { CurveInfo, WellInfo } from '$lib/types';
+	import type { CurveInfo, WellInfo, SegmentedCurveData } from '$lib/types';
 	import { selectionContext } from '$lib/panes/selection-context';
 	import type { ChartConfiguration } from '$lib/panes/chart-configs';
 	import { workspaceManager } from '$lib/panes/workspace-manager';
@@ -62,6 +62,22 @@
 			});
 		} else {
 			console.log('[ContextToolbar] No selected pane, cannot update');
+		}
+	}
+
+	/**
+	 * Handle segmented chart data changes (new segment-based architecture)
+	 */
+	function handleSegmentedDataChange(data: SegmentedCurveData | null): void {
+		console.log('[ContextToolbar] handleSegmentedDataChange called:', data ? `${data.segments.length} segments, ${data.total_points} points` : 'null');
+		if ($selectedPane) {
+			console.log('[ContextToolbar] Updating pane segmented data for:', $selectedPane.paneId);
+			// Store the segmented chart data in the pane config
+			workspaceManager.updatePaneConfig($selectedPane.paneId, {
+				segmentedChartData: data as any, // Store the segmented chart data
+			});
+		} else {
+			console.log('[ContextToolbar] No selected pane, cannot update segmented data');
 		}
 	}
 </script>
@@ -120,6 +136,7 @@
 					{onWellChange}
 					onConfigChange={handleChartConfigChange}
 					onDataChange={handleChartDataChange}
+					onSegmentedDataChange={handleSegmentedDataChange}
 				/>
 			</div>
 		</div>
