@@ -1326,3 +1326,68 @@ pub fn save_output_curve(
         error: None,
     })
 }
+
+// ==== Workspace Layout Persistence Commands ====
+
+use crate::local_db::{ChartLayout, LocalDbState};
+
+/// Save a workspace layout to the local database
+#[tauri::command]
+pub fn save_workspace_layout(
+    workspace_id: String,
+    layout_json: String,
+    local_db: State<'_, LocalDbState>,
+) -> Result<ChartLayout, String> {
+    info!(
+        "💾 Saving workspace layout for workspace: {}",
+        workspace_id
+    );
+
+    let db = local_db
+        .db
+        .lock()
+        .map_err(|e| format!("Failed to lock local database: {}", e))?;
+
+    db.save_workspace_layout(&workspace_id, &layout_json)
+        .map_err(|e| format!("Failed to save workspace layout: {}", e))
+}
+
+/// Get a workspace layout from the local database
+#[tauri::command]
+pub fn get_workspace_layout(
+    workspace_id: String,
+    local_db: State<'_, LocalDbState>,
+) -> Result<Option<ChartLayout>, String> {
+    info!(
+        "📖 Loading workspace layout for workspace: {}",
+        workspace_id
+    );
+
+    let db = local_db
+        .db
+        .lock()
+        .map_err(|e| format!("Failed to lock local database: {}", e))?;
+
+    db.get_workspace_layout(&workspace_id)
+        .map_err(|e| format!("Failed to get workspace layout: {}", e))
+}
+
+/// Delete a workspace layout from the local database
+#[tauri::command]
+pub fn delete_workspace_layout(
+    workspace_id: String,
+    local_db: State<'_, LocalDbState>,
+) -> Result<bool, String> {
+    info!(
+        "🗑️ Deleting workspace layout for workspace: {}",
+        workspace_id
+    );
+
+    let db = local_db
+        .db
+        .lock()
+        .map_err(|e| format!("Failed to lock local database: {}", e))?;
+
+    db.delete_workspace_layout(&workspace_id)
+        .map_err(|e| format!("Failed to delete workspace layout: {}", e))
+}

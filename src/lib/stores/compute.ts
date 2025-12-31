@@ -32,6 +32,16 @@ export const selectedWorkspaceId = writable<string | null>(null);
 export const selectedWellId = writable<string | null>(null);
 export const selectedCurveId = writable<string | null>(null);
 
+/**
+ * Tracks the previous workspace ID for layout persistence.
+ *
+ * This store persists across component unmount/remount cycles (e.g., when navigating
+ * from /workbench to /workspace and back). Without this, WorkspaceContainer's local
+ * previousWorkspaceId variable would reset to null on unmount, causing layouts to be
+ * saved to the wrong workspace key during switches.
+ */
+export const previousWorkspaceIdForLayout = writable<string | null>(null);
+
 // UDF stores
 export const providers = writable<ProviderInfo[]>([]);
 export const udfs = writable<UdfInfo[]>([]);
@@ -138,7 +148,23 @@ export async function loadUdfs() {
 }
 
 export async function selectWorkspace(id: string) {
+	console.log('[selectWorkspace] Starting workspace switch to:', id);
+	console.log('[selectWorkspace] Previous workspace ID:', get(selectedWorkspaceId));
+
+	// IMPORTANT: Set the new workspace ID FIRST
+	// The WorkspaceContainer's $effect will:
+	// 1. Detect the change (previousWorkspaceId !== currentWorkspaceId)
+	// 2. Save the OLD workspace's layout (using previousWorkspaceId)
+	// 3. Update previousWorkspaceId to currentWorkspaceId
+	// 4. Restore the NEW workspace's layout
+	//
+	// We do NOT call resetLayout() here - the WorkspaceContainer handles it
+	// during the restore process. Calling it here would corrupt the old layout
+	// before it can be saved.
+
 	selectedWorkspaceId.set(id);
+	console.log('[selectWorkspace] Set selectedWorkspaceId to:', id);
+
 	selectedWellId.set(null);
 	selectedCurveId.set(null);
 	wells.set([]);
@@ -155,8 +181,10 @@ export async function selectWorkspace(id: string) {
 		]);
 		wells.set(wellsResult);
 		allWorkspaceCurves.set(allCurvesResult);
+		console.log('[selectWorkspace] Loaded wells and curves for workspace:', id);
 	} catch (e) {
 		error.set(e instanceof Error ? e.message : String(e));
+		console.error('[selectWorkspace] Error loading workspace data:', e);
 	}
 }
 

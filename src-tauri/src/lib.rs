@@ -1,7 +1,9 @@
 mod commands;
 mod compute;
+mod local_db;
 
 use commands::{ActiveExecutions, ComputeState};
+use local_db::LocalDbState;
 use log::info;
 use std::sync::Mutex;
 use tauri::Manager;
@@ -42,6 +44,10 @@ pub fn run() {
             commands::get_execution_progress,
             commands::cancel_execution,
             commands::list_active_executions,
+            // Layout persistence
+            commands::save_workspace_layout,
+            commands::get_workspace_layout,
+            commands::delete_workspace_layout,
         ])
         .setup(|app| {
             info!("🚀 Initializing DataForge Compute");
@@ -51,18 +57,35 @@ pub fn run() {
 
             // Initialize state - locate DataForge's data directory
             let state = app.state::<Mutex<ComputeState>>();
-            let init_result = {
+            let dataforge_data_dir = {
                 let mut state = state.lock().expect("Failed to lock compute state");
-                state.initialize()
+                let init_result = state.initialize();
+
+                match init_result {
+                    Ok(_) => {
+                        info!("✅ Compute state initialized successfully");
+                    }
+                    Err(e) => {
+                        log::error!("❌ Failed to initialize compute state: {}", e);
+                    }
+                }
+
+                state.dataforge_data_dir.clone()
             };
 
-            match init_result {
-                Ok(_) => {
-                    info!("✅ Compute state initialized successfully");
+            // Initialize local database for user preferences and layout storage
+            if let Some(data_dir) = dataforge_data_dir {
+                match LocalDbState::new(&data_dir) {
+                    Ok(local_db) => {
+                        info!("✅ Local database initialized successfully");
+                        app.manage(local_db);
+                    }
+                    Err(e) => {
+                        log::error!("❌ Failed to initialize local database: {}", e);
+                    }
                 }
-                Err(e) => {
-                    log::error!("❌ Failed to initialize compute state: {}", e);
-                }
+            } else {
+                log::warn!("⚠️ DataForge data directory not found, local database not initialized");
             }
 
             // Open devtools in debug mode

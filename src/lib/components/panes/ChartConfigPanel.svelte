@@ -8,9 +8,11 @@
 	 * - Cross Plot: X/Y/Z axis selection, color map
 	 * - Well Log: Track configuration, depth range
 	 */
-	import type { CurveInfo, WellInfo } from '$lib/types';
+	import type { CurveInfo, WellInfo, CurveInfoWithWell } from '$lib/types';
 	import type { PaneNode } from '$lib/panes/layout-model';
 	import { PaneType } from '$lib/panes/layout-model';
+	import { allWorkspaceCurves } from '$lib/stores/compute';
+	import { onDestroy } from 'svelte';
 	import type {
 		ChartConfiguration,
 		LineChartConfig,
@@ -21,12 +23,30 @@
 		AxisBinding,
 		SeriesStyle,
 	} from '$lib/panes/chart-configs';
+	import type {
+		CorrelationConfig,
+		WellCorrelationEntry,
+		CorrelationTrack,
+		CorrelationCurveData,
+		SelectedCurveType,
+		CorrelationLayoutConfig,
+	} from '$lib/charts/correlation-types';
+	import {
+		createWellEntry,
+		createTrack,
+		createTrackWithDefaults,
+		getDefaultCurveColor,
+		getDefaultCurveRange,
+		getNextWellColor,
+		DEFAULT_LAYOUT,
+	} from '$lib/charts/correlation-types';
 	import {
 		createDefaultLineChartConfig,
 		createDefaultScatterChartConfig,
 		createDefaultHistogramConfig,
 		createDefaultCrossPlotConfig,
 		createDefaultWellLogConfig,
+		createDefaultCorrelationConfig,
 		COLOR_PRESETS,
 		getChartTypeName,
 	} from '$lib/panes/chart-configs';
@@ -54,12 +74,24 @@
 		onDataChange?: (data: ChartDataFrame | null) => void;
 		/** Callback when segmented chart data changes (new segment-based format) */
 		onSegmentedDataChange?: (data: SegmentedCurveData | null) => void;
+		/** Callback when correlation curve data changes (for correlation panels) */
+		onCorrelationCurveDataChange?: (trackId: string, data: CorrelationCurveData | null) => void;
 	}
 
-	let { pane, config, wells, curves, well, onWellChange, onConfigChange, onDataChange, onSegmentedDataChange }: Props = $props();
+	let { pane, config, wells, curves, well, onWellChange, onConfigChange, onDataChange, onSegmentedDataChange, onCorrelationCurveDataChange }: Props = $props();
 
 	/** Loading state for curve data */
 	let isLoadingData = $state(false);
+
+	/**
+	 * All curves in the workspace (with well_id) for correlation panels.
+	 * This is used to filter curves by well_id when building well tracks.
+	 */
+	let workspaceCurves: CurveInfoWithWell[] = $state([]);
+	const unsubscribeWorkspaceCurves = allWorkspaceCurves.subscribe((value) => {
+		workspaceCurves = value;
+	});
+	onDestroy(() => unsubscribeWorkspaceCurves());
 
 	/** Initialize config if not present */
 	let chartConfig = $derived.by(() => {
@@ -77,6 +109,8 @@
 			case PaneType.WellLog:
 			case PaneType.LinkedCharts:
 				return createDefaultWellLogConfig();
+			case PaneType.Correlation:
+				return createDefaultCorrelationConfig();
 			default:
 				return createDefaultLineChartConfig();
 		}
@@ -592,6 +626,395 @@
 		} finally {
 			isLoadingData = false;
 		}
+	}
+
+	// --- Correlation Chart Helpers ---
+
+	/**
+	 * Add a well to the correlation view
+	 */
+	function addWellToCorrelation(wellId: string): void {
+		const wellInfo = wells.find(w => w.id === wellId);
+		if (!wellInfo) return;
+
+		const correlationConfig = chartConfig as CorrelationConfig;
+		const newWell = createWellEntry(
+			wellId,
+			wellInfo.name,
+			getNextWellColor(correlationConfig.wells.length)
+		);
+
+		onConfigChange({
+			...correlationConfig,
+			wells: [...correlationConfig.wells, newWell]
+		} as ChartConfiguration);
+	}
+
+	/**
+	 * Remove a well from the correlation view
+	 */
+	function removeWellFromCorrelation(wellId: string): void {
+		const correlationConfig = chartConfig as CorrelationConfig;
+		onConfigChange({
+			...correlationConfig,
+			wells: correlationConfig.wells.filter(w => w.wellId !== wellId)
+		} as ChartConfiguration);
+	}
+
+	/**
+	 * Add a curve to a well in the correlation view
+	 */
+	async function addCurveToWell(wellId: string, curveId: string): Promise<void> {
+		const curveInfo = curves.find(c => c.id === curveId);
+		if (!curveInfo) return;
+
+		const correlationConfig = chartConfig as CorrelationConfig;
+		const newTrack = createTrack(
+			wellId,
+			curveId,
+			curveInfo.mnemonic,
+			getDefaultCurveColor(curveInfo.mnemonic)
+		);
+
+		const trackId = newTrack.id; // This is `${wellId}:${curveId}`
+		console.log('[ChartConfigPanel] Adding curve to well:', { wellId, curveId, trackId, mnemonic: curveInfo.mnemonic });
+
+		const updatedWells = correlationConfig.wells.map(well => {
+			if (well.wellId === wellId) {
+				return { ...well, tracks: [...well.tracks, newTrack] };
+			}
+			return well;
+		});
+
+		onConfigChange({
+			...correlationConfig,
+			wells: updatedWells
+		} as ChartConfiguration);
+
+		// Load the curve data for correlation panel
+		try {
+			const segmentedData = await loadSegmentedCurveData(curveId);
+			console.log('[ChartConfigPanel] Loaded segmented data for correlation:', {
+				trackId,
+				curveId,
+				hasData: !!segmentedData,
+				segments: segmentedData?.segments.length,
+				points: segmentedData?.total_points
+			});
+
+			if (segmentedData) {
+				// Convert SegmentedCurveData to CorrelationCurveData format
+				const correlationCurveData: CorrelationCurveData = {
+					trackId,
+					mnemonic: segmentedData.mnemonic,
+					unit: segmentedData.unit,
+					segments: segmentedData.segments.map(seg => ({
+						depthStart: seg.depth_start,
+						depthEnd: seg.depth_end,
+						depths: seg.depths,
+						values: seg.values
+					})),
+					depthRange: {
+						min: segmentedData.depth_range[0],
+						max: segmentedData.depth_range[1]
+					},
+					totalPoints: segmentedData.total_points,
+					source: {
+						type: 'well_curve',
+						wellId: wellId,
+						curveId: curveId
+					}
+				};
+
+				console.log('[ChartConfigPanel] Calling onCorrelationCurveDataChange:', {
+					trackId,
+					mnemonic: correlationCurveData.mnemonic,
+					totalPoints: correlationCurveData.totalPoints
+				});
+
+				// Use the correlation-specific callback
+				onCorrelationCurveDataChange?.(trackId, correlationCurveData);
+			}
+		} catch (error) {
+			console.error('[ChartConfigPanel] Failed to load curve data for correlation:', error);
+		}
+	}
+
+	/**
+	 * Remove a track from a well in the correlation view
+	 */
+	function removeTrackFromWell(wellId: string, trackId: string): void {
+		console.log('[ChartConfigPanel] Removing track from well:', { wellId, trackId });
+
+		const correlationConfig = chartConfig as CorrelationConfig;
+		const updatedWells = correlationConfig.wells.map(well => {
+			if (well.wellId === wellId) {
+				return { ...well, tracks: well.tracks.filter(t => t.id !== trackId) };
+			}
+			return well;
+		});
+		onConfigChange({
+			...correlationConfig,
+			wells: updatedWells
+		} as ChartConfiguration);
+
+		// Also remove the curve data from the map
+		onCorrelationCurveDataChange?.(trackId, null);
+	}
+
+	/**
+	 * Update correlation depth range settings
+	 */
+	function updateCorrelationDepthRange(updates: Partial<CorrelationConfig['depthRange']>): void {
+		const correlationConfig = chartConfig as CorrelationConfig;
+		onConfigChange({
+			...correlationConfig,
+			depthRange: { ...correlationConfig.depthRange, ...updates }
+		} as ChartConfiguration);
+	}
+
+	/**
+	 * Update a correlation config field
+	 */
+	function updateCorrelationConfig<K extends keyof CorrelationConfig>(
+		key: K,
+		value: CorrelationConfig[K]
+	): void {
+		const correlationConfig = chartConfig as CorrelationConfig;
+		onConfigChange({
+			...correlationConfig,
+			[key]: value
+		} as ChartConfiguration);
+	}
+
+	// --- Unified Curve Selection Helpers (Part 3) ---
+
+	/**
+	 * Get all unique mnemonics from workspace curves (for correlation panels).
+	 * Uses workspaceCurves (all curves with well_id) instead of the well-specific curves prop.
+	 */
+	let uniqueMnemonics = $derived.by(() => {
+		const mnemonics = new Set<string>();
+		for (const curve of workspaceCurves) {
+			mnemonics.add(curve.mnemonic.toUpperCase());
+		}
+		return [...mnemonics].sort();
+	});
+
+	/**
+	 * Toggle a curve type in the unified selection
+	 */
+	function toggleCurveType(mnemonic: string): void {
+		const correlationConfig = chartConfig as CorrelationConfig;
+		const upperMnemonic = mnemonic.toUpperCase();
+		const exists = correlationConfig.selectedCurveTypes?.find(
+			(ct) => ct.mnemonic.toUpperCase() === upperMnemonic
+		);
+
+		let newSelectedCurveTypes: SelectedCurveType[];
+		if (exists) {
+			// Remove
+			newSelectedCurveTypes = (correlationConfig.selectedCurveTypes ?? []).filter(
+				(ct) => ct.mnemonic.toUpperCase() !== upperMnemonic
+			);
+		} else {
+			// Add with defaults
+			const range = getDefaultCurveRange(mnemonic);
+			const newCurveType: SelectedCurveType = {
+				mnemonic: upperMnemonic,
+				color: getDefaultCurveColor(mnemonic),
+				xMin: range?.min,
+				xMax: range?.max,
+				logScale: range?.logScale ?? false
+			};
+			newSelectedCurveTypes = [...(correlationConfig.selectedCurveTypes ?? []), newCurveType];
+		}
+
+		onConfigChange({
+			...correlationConfig,
+			selectedCurveTypes: newSelectedCurveTypes
+		} as ChartConfiguration);
+
+		// Rebuild well tracks after selection change
+		rebuildWellTracks(newSelectedCurveTypes, correlationConfig.selectedWellIds ?? []);
+	}
+
+	/**
+	 * Update a curve type's X-axis settings
+	 */
+	function updateCurveTypeSettings(mnemonic: string, updates: Partial<SelectedCurveType>): void {
+		const correlationConfig = chartConfig as CorrelationConfig;
+		const upperMnemonic = mnemonic.toUpperCase();
+		const updatedCurveTypes = (correlationConfig.selectedCurveTypes ?? []).map((ct) => {
+			if (ct.mnemonic.toUpperCase() === upperMnemonic) {
+				return { ...ct, ...updates };
+			}
+			return ct;
+		});
+
+		onConfigChange({
+			...correlationConfig,
+			selectedCurveTypes: updatedCurveTypes
+		} as ChartConfiguration);
+
+		// Rebuild tracks to apply new settings
+		rebuildWellTracks(updatedCurveTypes, correlationConfig.selectedWellIds ?? []);
+	}
+
+	/**
+	 * Toggle a well in the unified selection
+	 */
+	function toggleWell(wellId: string): void {
+		const correlationConfig = chartConfig as CorrelationConfig;
+		const selectedWellIds = correlationConfig.selectedWellIds ?? [];
+		const isSelected = selectedWellIds.includes(wellId);
+
+		let newSelectedWellIds: string[];
+		if (isSelected) {
+			newSelectedWellIds = selectedWellIds.filter((id) => id !== wellId);
+		} else {
+			newSelectedWellIds = [...selectedWellIds, wellId];
+		}
+
+		onConfigChange({
+			...correlationConfig,
+			selectedWellIds: newSelectedWellIds
+		} as ChartConfiguration);
+
+		// Rebuild well tracks after selection change
+		rebuildWellTracks(correlationConfig.selectedCurveTypes ?? [], newSelectedWellIds);
+	}
+
+	/**
+	 * Get the count of matching curves for a specific well.
+	 * Uses workspaceCurves to find curves that belong to this well AND match selected mnemonics.
+	 */
+	function getWellCurveMatchCount(wellId: string): number {
+		const correlationConfig = chartConfig as CorrelationConfig;
+		const selectedMnemonics = new Set(
+			(correlationConfig.selectedCurveTypes ?? []).map((ct) => ct.mnemonic.toUpperCase())
+		);
+		if (selectedMnemonics.size === 0) return 0;
+
+		// Find curves for THIS SPECIFIC WELL that match selected mnemonics
+		const wellCurves = workspaceCurves.filter(
+			(c) => c.well_id === wellId && selectedMnemonics.has(c.mnemonic.toUpperCase())
+		);
+		return wellCurves.length;
+	}
+
+	/**
+	 * Rebuild wells array based on unified selection.
+	 * Uses workspaceCurves to find curves that belong to each specific well.
+	 */
+	async function rebuildWellTracks(
+		selectedCurveTypes: SelectedCurveType[],
+		selectedWellIds: string[]
+	): Promise<void> {
+		if (selectedCurveTypes.length === 0 || selectedWellIds.length === 0) {
+			// Clear wells if nothing selected
+			const correlationConfig = chartConfig as CorrelationConfig;
+			onConfigChange({
+				...correlationConfig,
+				wells: [],
+				selectedCurveTypes,
+				selectedWellIds
+			} as ChartConfiguration);
+			return;
+		}
+
+		const selectedMnemonics = new Set(
+			selectedCurveTypes.map((ct) => ct.mnemonic.toUpperCase())
+		);
+		const newWells: WellCorrelationEntry[] = [];
+
+		for (const wellId of selectedWellIds) {
+			const wellInfo = wells.find((w) => w.id === wellId);
+			if (!wellInfo) continue;
+
+			// FIX: Filter workspace curves by BOTH well_id AND mnemonic
+			// This ensures each well only gets its own curves, not curves from other wells
+			const matchingCurves = workspaceCurves.filter(
+				(c) => c.well_id === wellId && selectedMnemonics.has(c.mnemonic.toUpperCase())
+			);
+
+			if (matchingCurves.length === 0) continue;
+
+			const tracks = matchingCurves.map((curve) => {
+				const curveTypeConfig = selectedCurveTypes.find(
+					(ct) => ct.mnemonic.toUpperCase() === curve.mnemonic.toUpperCase()
+				);
+				return createTrackWithDefaults(wellId, curve.id, curve.mnemonic, curveTypeConfig);
+			});
+
+			newWells.push({
+				wellId,
+				wellName: wellInfo.name,
+				wellColor: getNextWellColor(newWells.length),
+				tracks
+			});
+		}
+
+		const correlationConfig = chartConfig as CorrelationConfig;
+		onConfigChange({
+			...correlationConfig,
+			selectedCurveTypes,
+			selectedWellIds,
+			wells: newWells
+		} as ChartConfiguration);
+
+		// Load data for all tracks
+		for (const well of newWells) {
+			for (const track of well.tracks) {
+				await loadTrackCurveData(well.wellId, track);
+			}
+		}
+	}
+
+	/**
+	 * Load curve data for a correlation track
+	 */
+	async function loadTrackCurveData(wellId: string, track: CorrelationTrack): Promise<void> {
+		try {
+			const segmentedData = await loadSegmentedCurveData(track.curveId);
+			if (segmentedData) {
+				const correlationCurveData: CorrelationCurveData = {
+					trackId: track.id,
+					mnemonic: segmentedData.mnemonic,
+					unit: segmentedData.unit,
+					segments: segmentedData.segments.map((seg) => ({
+						depthStart: seg.depth_start,
+						depthEnd: seg.depth_end,
+						depths: seg.depths,
+						values: seg.values
+					})),
+					depthRange: {
+						min: segmentedData.depth_range[0],
+						max: segmentedData.depth_range[1]
+					},
+					totalPoints: segmentedData.total_points,
+					source: {
+						type: 'well_curve',
+						wellId: wellId,
+						curveId: track.curveId
+					}
+				};
+				onCorrelationCurveDataChange?.(track.id, correlationCurveData);
+			}
+		} catch (error) {
+			console.error('[ChartConfigPanel] Failed to load track curve data:', error);
+		}
+	}
+
+	/**
+	 * Update layout configuration
+	 */
+	function updateLayoutConfig(updates: Partial<CorrelationLayoutConfig>): void {
+		const correlationConfig = chartConfig as CorrelationConfig;
+		onConfigChange({
+			...correlationConfig,
+			layout: { ...(correlationConfig.layout ?? DEFAULT_LAYOUT), ...updates }
+		} as ChartConfiguration);
 	}
 </script>
 
@@ -1251,6 +1674,235 @@
 					</label>
 				</div>
 			{/if}
+
+			<!-- Well Correlation Options -->
+			{#if chartConfig.type === 'correlation'}
+				{@const correlationConfig = chartConfig as CorrelationConfig}
+
+				<!-- Curve Types Section (Unified Selection) -->
+				<div class="config-section">
+					<h4 class="section-title">Curve Types</h4>
+
+					{#if uniqueMnemonics.length === 0}
+						<div class="well-hint">
+							<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+								<path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+							</svg>
+							<span>Select a well first to see available curve types</span>
+						</div>
+					{:else}
+						<!-- Curve type checkboxes -->
+						<div class="curve-type-list">
+							{#each uniqueMnemonics as mnemonic (mnemonic)}
+								{@const isSelected = (correlationConfig.selectedCurveTypes ?? []).some(ct => ct.mnemonic.toUpperCase() === mnemonic)}
+								<label class="curve-type-item">
+									<input
+										type="checkbox"
+										checked={isSelected}
+										onchange={() => toggleCurveType(mnemonic)}
+									/>
+									<span class="curve-type-dot" style="background: {getDefaultCurveColor(mnemonic)}"></span>
+									<span class="curve-type-name">{mnemonic}</span>
+								</label>
+							{/each}
+						</div>
+
+						<!-- Selected curve type settings -->
+						{#if (correlationConfig.selectedCurveTypes ?? []).length > 0}
+							<div class="curve-type-settings-list">
+								{#each correlationConfig.selectedCurveTypes ?? [] as curveType (curveType.mnemonic)}
+									<div class="curve-type-settings">
+										<span class="curve-type-label" style="color: {curveType.color}">{curveType.mnemonic}</span>
+										<div class="curve-type-inputs">
+											<input
+												type="number"
+												class="field-input small"
+												placeholder="Min"
+												value={curveType.xMin ?? ''}
+												onchange={(e) => updateCurveTypeSettings(curveType.mnemonic, {
+													xMin: e.currentTarget.value ? parseFloat(e.currentTarget.value) : undefined
+												})}
+											/>
+											<span class="input-separator">-</span>
+											<input
+												type="number"
+												class="field-input small"
+												placeholder="Max"
+												value={curveType.xMax ?? ''}
+												onchange={(e) => updateCurveTypeSettings(curveType.mnemonic, {
+													xMax: e.currentTarget.value ? parseFloat(e.currentTarget.value) : undefined
+												})}
+											/>
+											<label class="checkbox-label compact">
+												<input
+													type="checkbox"
+													checked={curveType.logScale ?? false}
+													onchange={(e) => updateCurveTypeSettings(curveType.mnemonic, {
+														logScale: e.currentTarget.checked
+													})}
+												/>
+												<span>Log</span>
+											</label>
+										</div>
+									</div>
+								{/each}
+							</div>
+						{/if}
+					{/if}
+				</div>
+
+				<!-- Wells Section (Unified Selection) -->
+				<div class="config-section">
+					<h4 class="section-title">Wells</h4>
+
+					{#if wells.length === 0}
+						<div class="well-hint">
+							<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+								<path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+							</svg>
+							<span>No wells available in workspace</span>
+						</div>
+					{:else}
+						<div class="wells-checklist">
+							{#each wells as wellInfo (wellInfo.id)}
+								{@const isSelected = (correlationConfig.selectedWellIds ?? []).includes(wellInfo.id)}
+								{@const matchCount = getWellCurveMatchCount(wellInfo.id)}
+								{@const totalSelected = (correlationConfig.selectedCurveTypes ?? []).length}
+								<label class="well-checkbox-item">
+									<input
+										type="checkbox"
+										checked={isSelected}
+										onchange={() => toggleWell(wellInfo.id)}
+									/>
+									<span class="well-checkbox-name">{wellInfo.name}</span>
+									{#if totalSelected > 0}
+										<span class="match-badge" class:partial={matchCount < totalSelected && matchCount > 0}>
+											{matchCount}/{totalSelected}
+										</span>
+									{/if}
+								</label>
+							{/each}
+						</div>
+					{/if}
+				</div>
+
+				<!-- Layout Section -->
+				<div class="config-section">
+					<h4 class="section-title">Layout</h4>
+
+					<div class="field-group">
+						<label class="field-label" for="track-width">Track Width (px)</label>
+						<input
+							id="track-width"
+							type="number"
+							class="field-input"
+							min="80"
+							max="300"
+							value={correlationConfig.layout?.trackWidth ?? 140}
+							onchange={(e) => updateLayoutConfig({
+								trackWidth: parseInt(e.currentTarget.value) || 140
+							})}
+						/>
+					</div>
+				</div>
+
+				<!-- Depth Range Section -->
+				<div class="config-section">
+					<h4 class="section-title">Depth Range</h4>
+
+					<label class="checkbox-label">
+						<input
+							type="checkbox"
+							checked={correlationConfig.depthRange.autoScale}
+							onchange={(e) => updateCorrelationDepthRange({ autoScale: e.currentTarget.checked })}
+						/>
+						<span>Auto-scale from all curves</span>
+					</label>
+
+					{#if !correlationConfig.depthRange.autoScale}
+						<div class="field-row">
+							<div class="field-group">
+								<label class="field-label" for="corr-depth-min">Min Depth</label>
+								<input
+									id="corr-depth-min"
+									type="number"
+									class="field-input"
+									value={correlationConfig.depthRange.min ?? ''}
+									onchange={(e) => updateCorrelationDepthRange({
+										min: e.currentTarget.value ? parseFloat(e.currentTarget.value) : null
+									})}
+								/>
+							</div>
+							<div class="field-group">
+								<label class="field-label" for="corr-depth-max">Max Depth</label>
+								<input
+									id="corr-depth-max"
+									type="number"
+									class="field-input"
+									value={correlationConfig.depthRange.max ?? ''}
+									onchange={(e) => updateCorrelationDepthRange({
+										max: e.currentTarget.value ? parseFloat(e.currentTarget.value) : null
+									})}
+								/>
+							</div>
+						</div>
+					{/if}
+
+					<label class="checkbox-label">
+						<input
+							type="checkbox"
+							checked={correlationConfig.depthRange.inverted}
+							onchange={(e) => updateCorrelationDepthRange({ inverted: e.currentTarget.checked })}
+						/>
+						<span>Invert Depth (Increasing Downward)</span>
+					</label>
+				</div>
+
+				<!-- Display Settings -->
+				<div class="config-section">
+					<h4 class="section-title">Display</h4>
+
+					<div class="field-row">
+						<label class="checkbox-label">
+							<input
+								type="checkbox"
+								checked={correlationConfig.showLegend}
+								onchange={(e) => updateCorrelationConfig('showLegend', e.currentTarget.checked)}
+							/>
+							<span>Legend</span>
+						</label>
+
+						<label class="checkbox-label">
+							<input
+								type="checkbox"
+								checked={correlationConfig.showGrid}
+								onchange={(e) => updateCorrelationConfig('showGrid', e.currentTarget.checked)}
+							/>
+							<span>Grid</span>
+						</label>
+					</div>
+
+					<div class="field-row">
+						<label class="checkbox-label">
+							<input
+								type="checkbox"
+								checked={correlationConfig.enableZoom}
+								onchange={(e) => updateCorrelationConfig('enableZoom', e.currentTarget.checked)}
+							/>
+							<span>Zoom</span>
+						</label>
+
+						<label class="checkbox-label">
+							<input
+								type="checkbox"
+								checked={correlationConfig.showCursor}
+								onchange={(e) => updateCorrelationConfig('showCursor', e.currentTarget.checked)}
+							/>
+							<span>Cursor</span>
+						</label>
+					</div>
+				</div>
+			{/if}
 		{/if}
 	</div>
 </div>
@@ -1395,5 +2047,147 @@
 
 	.color-preset.selected {
 		border-color: var(--color-text, #111827);
+	}
+
+
+	/* Unified Curve Type Selection Styles */
+	.curve-type-list {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+		margin-bottom: 12px;
+	}
+
+	.curve-type-item {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 4px 8px;
+		background: var(--color-bg-tertiary, #f3f4f6);
+		border-radius: 4px;
+		font-size: 12px;
+		cursor: pointer;
+		transition: background 0.15s ease;
+	}
+
+	.curve-type-item:hover {
+		background: var(--color-bg-secondary, #e5e7eb);
+	}
+
+	.curve-type-item input[type='checkbox'] {
+		width: 14px;
+		height: 14px;
+		cursor: pointer;
+	}
+
+	.curve-type-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		flex-shrink: 0;
+	}
+
+	.curve-type-name {
+		font-weight: 500;
+		color: var(--color-text, #111827);
+	}
+
+	.curve-type-settings-list {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		margin-top: 8px;
+		padding-top: 8px;
+		border-top: 1px solid var(--color-border, #e5e7eb);
+	}
+
+	.curve-type-settings {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 6px 8px;
+		background: var(--color-bg-tertiary, #f3f4f6);
+		border-radius: 4px;
+	}
+
+	.curve-type-label {
+		font-size: 11px;
+		font-weight: 600;
+		min-width: 40px;
+	}
+
+	.curve-type-inputs {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		flex: 1;
+	}
+
+	.input-separator {
+		color: var(--color-text-tertiary, #9ca3af);
+		font-size: 12px;
+	}
+
+	.checkbox-label.compact {
+		margin-bottom: 0;
+		font-size: 11px;
+		gap: 4px;
+	}
+
+	.checkbox-label.compact input[type='checkbox'] {
+		width: 14px;
+		height: 14px;
+	}
+
+	/* Wells Checklist Styles */
+	.wells-checklist {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.well-checkbox-item {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 6px 8px;
+		background: var(--color-bg-tertiary, #f3f4f6);
+		border-radius: 4px;
+		font-size: 12px;
+		cursor: pointer;
+		transition: background 0.15s ease;
+	}
+
+	.well-checkbox-item:hover {
+		background: var(--color-bg-secondary, #e5e7eb);
+	}
+
+	.well-checkbox-item input[type='checkbox'] {
+		width: 14px;
+		height: 14px;
+		cursor: pointer;
+	}
+
+	.well-checkbox-name {
+		flex: 1;
+		font-weight: 500;
+		color: var(--color-text, #111827);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.match-badge {
+		padding: 2px 6px;
+		font-size: 10px;
+		font-weight: 500;
+		border-radius: 3px;
+		background: var(--color-success-light, #dcfce7);
+		color: var(--color-success, #16a34a);
+	}
+
+	.match-badge.partial {
+		background: var(--color-warning-light, #fef3c7);
+		color: var(--color-warning, #d97706);
 	}
 </style>

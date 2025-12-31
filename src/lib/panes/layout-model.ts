@@ -90,6 +90,7 @@ export enum PaneType {
 	WellLog = 'welllog',
 	DataGrid = 'data-grid',
 	LinkedCharts = 'linked-charts',
+	Correlation = 'correlation',
 	Table = 'table',
 	Empty = 'empty',
 }
@@ -267,6 +268,8 @@ export function getDefaultPaneTitle(paneType: PaneType): string {
 			return 'Data Grid';
 		case PaneType.LinkedCharts:
 			return 'Linked Charts';
+		case PaneType.Correlation:
+			return 'Well Correlation';
 		case PaneType.Table:
 			return 'Output Table';
 		case PaneType.Empty:

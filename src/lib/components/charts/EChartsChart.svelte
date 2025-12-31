@@ -85,6 +85,24 @@
 		syncViewport?: boolean;
 		/** Show regression/trend line for scatter/crossplot charts */
 		showRegression?: boolean;
+		/** Fixed Y-axis minimum value (for shared axis across charts) */
+		yAxisMin?: number;
+		/** Fixed Y-axis maximum value (for shared axis across charts) */
+		yAxisMax?: number;
+		/** Hide Y-axis labels (when using shared depth track) */
+		hideYAxis?: boolean;
+		/** Fixed X-axis minimum value (for curve type standard ranges) */
+		xAxisMin?: number;
+		/** Fixed X-axis maximum value (for curve type standard ranges) */
+		xAxisMax?: number;
+		/** Use logarithmic scale for X-axis (e.g., resistivity) */
+		xAxisLogScale?: boolean;
+		/** Position of X-axis ('top' or 'bottom', default: 'bottom') */
+		xAxisPosition?: 'top' | 'bottom';
+		/** Disable downsampling - show all data points (for correlation view) */
+		disableDownsampling?: boolean;
+		/** Only allow Y-axis zoom (for well correlation - depth sync only) */
+		yAxisOnlyZoom?: boolean;
 	}
 
 	let {
@@ -101,7 +119,16 @@
 		linkGroup,
 		syncCursor = true,
 		syncViewport = false,
-		showRegression = false
+		showRegression = false,
+		yAxisMin,
+		yAxisMax,
+		hideYAxis = false,
+		xAxisMin,
+		xAxisMax,
+		xAxisLogScale = false,
+		xAxisPosition = 'bottom',
+		disableDownsampling = false,
+		yAxisOnlyZoom = false
 	}: Props = $props();
 
 	let container: HTMLDivElement;
@@ -135,6 +162,36 @@
 		popover: '#ffffff',
 		popoverForeground: '#111827'
 	};
+
+	/**
+	 * Format large numbers in compact notation (1k, 1M, etc.)
+	 * Limits display to no more than two trailing zeros
+	 */
+	function formatCompactNumber(value: number): string {
+		const absValue = Math.abs(value);
+		if (absValue >= 1000000) {
+			const formatted = (value / 1000000);
+			// Show one decimal if not a whole number
+			return (formatted % 1 === 0 ? formatted.toFixed(0) : formatted.toFixed(1)) + 'M';
+		}
+		if (absValue >= 1000) {
+			const formatted = (value / 1000);
+			// Show one decimal if not a whole number
+			return (formatted % 1 === 0 ? formatted.toFixed(0) : formatted.toFixed(1)) + 'k';
+		}
+		// For values under 1000, show reasonable precision
+		if (absValue >= 100) {
+			return value.toFixed(0);
+		}
+		if (absValue >= 10) {
+			return value.toFixed(1);
+		}
+		if (absValue >= 1) {
+			return value.toFixed(2);
+		}
+		// Very small numbers
+		return value.toPrecision(3);
+	}
 
 	/**
 	 * Downsample data for efficient rendering while preserving gaps
@@ -707,9 +764,14 @@
 		const shouldInvertY = isWellLog && invertY;
 
 		// Get series data from segments
+		// When disableDownsampling is true, use Infinity to show all points
+		const targetPoints = disableDownsampling
+			? Infinity
+			: calculateSampleCount(containerWidth, 2) / Math.max(1, segmentedData.segments.length);
+
 		const seriesSegments = segmentedCurveToSeriesData(segmentedData, {
 			swapForWellLog: shouldInvertY,
-			targetPointsPerSegment: calculateSampleCount(containerWidth, 2) / Math.max(1, segmentedData.segments.length)
+			targetPointsPerSegment: targetPoints
 		});
 
 		// Theme colors for ECharts
@@ -738,18 +800,41 @@
 			splitLine: { show: true, lineStyle: { color: themeColorsLocal.border, opacity: 0.5 } }
 		};
 
-		// Depth axis config
+		// Depth axis config - use fixed bounds if provided
 		const depthAxisConfig = {
 			...axisStyle,
-			name: 'Depth',
-			nameGap: 40
+			name: hideYAxis ? '' : 'Depth',
+			nameGap: 40,
+			// Use fixed min/max if provided (for shared depth axis)
+			min: yAxisMin !== undefined ? yAxisMin : ('dataMin' as const),
+			max: yAxisMax !== undefined ? yAxisMax : ('dataMax' as const),
+			// Hide axis labels and ticks if hideYAxis is true
+			axisLabel: hideYAxis
+				? { show: false }
+				: { color: themeColorsLocal.mutedForeground, fontSize: 11 },
+			axisTick: hideYAxis ? { show: false } : undefined,
+			splitLine: hideYAxis
+				? { show: false }
+				: { show: true, lineStyle: { color: themeColorsLocal.border, opacity: 0.5 } }
 		};
 
-		// Value axis config
+		// Value axis config (X-axis in well log mode)
 		const valueAxisConfig = {
 			...axisStyle,
+			type: xAxisLogScale ? ('log' as const) : ('value' as const),
 			name: segmentedData.mnemonic + (segmentedData.unit ? ` (${segmentedData.unit})` : ''),
-			nameGap: 50
+			nameGap: xAxisPosition === 'top' ? 25 : 50,
+			nameLocation: 'middle' as const,
+			min: xAxisMin !== undefined ? xAxisMin : ('dataMin' as const),
+			max: xAxisMax !== undefined ? xAxisMax : ('dataMax' as const),
+			// Position at top for well log correlation view
+			position: xAxisPosition === 'top' ? ('top' as const) : ('bottom' as const),
+			// Format axis labels with compact notation (1k, 1M)
+			axisLabel: {
+				color: themeColorsLocal.mutedForeground,
+				fontSize: 10,
+				formatter: formatCompactNumber
+			}
 		};
 
 		// Build series from segments - each segment becomes a separate line series
@@ -811,42 +896,60 @@
 				: undefined,
 
 			grid: {
-				left: 70,
-				right: 30,
-				top: title ? 50 : 30,
-				bottom: enableZoom ? 60 : 40,
+				left: hideYAxis ? 5 : 70,
+				right: 5,
+				// When X-axis is at top, increase top margin for axis labels
+				top: xAxisPosition === 'top' ? 45 : (title ? 50 : 30),
+				// When X-axis is at top, reduce bottom margin
+				bottom: xAxisPosition === 'top' ? 5 : (enableZoom ? 60 : 40),
 				containLabel: false
 			},
 
 			// Axes - for well log: X=value, Y=depth(inverted)
 			xAxis: shouldInvertY
 				? { ...valueAxisConfig, inverse: false }
-				: { ...depthAxisConfig, inverse: false },
+				: { ...depthAxisConfig, inverse: false, position: xAxisPosition },
 			yAxis: shouldInvertY
 				? { ...depthAxisConfig, inverse: true }
 				: { ...valueAxisConfig, inverse: false },
 
+			// DataZoom configuration
+			// When yAxisOnlyZoom is true (correlation view), only allow Y-axis (depth) zooming
+			// X-axis (curve values) remains fixed
 			dataZoom: enableZoom
-				? [
-						{
-							type: 'inside',
-							xAxisIndex: 0,
-							filterMode: 'none',
-							throttle: 50,
-							zoomOnMouseWheel: currentCursorMode === 'zoom-in' || currentCursorMode === 'zoom-out' || currentCursorMode === 'pointer',
-							moveOnMouseMove: currentCursorMode === 'pan',
-							moveOnMouseWheel: false
-						},
-						{
-							type: 'inside',
-							yAxisIndex: 0,
-							filterMode: 'none',
-							throttle: 50,
-							zoomOnMouseWheel: currentCursorMode === 'zoom-in' || currentCursorMode === 'zoom-out' || currentCursorMode === 'pointer',
-							moveOnMouseMove: currentCursorMode === 'pan',
-							moveOnMouseWheel: false
-						}
-					]
+				? (yAxisOnlyZoom
+					? [
+							// Y-axis only zoom for correlation view
+							{
+								type: 'inside',
+								yAxisIndex: 0,
+								filterMode: 'none',
+								throttle: 50,
+								zoomOnMouseWheel: true,
+								moveOnMouseMove: currentCursorMode === 'pan',
+								moveOnMouseWheel: false
+							}
+						]
+					: [
+							{
+								type: 'inside',
+								xAxisIndex: 0,
+								filterMode: 'none',
+								throttle: 50,
+								zoomOnMouseWheel: currentCursorMode === 'zoom-in' || currentCursorMode === 'zoom-out' || currentCursorMode === 'pointer',
+								moveOnMouseMove: currentCursorMode === 'pan',
+								moveOnMouseWheel: false
+							},
+							{
+								type: 'inside',
+								yAxisIndex: 0,
+								filterMode: 'none',
+								throttle: 50,
+								zoomOnMouseWheel: currentCursorMode === 'zoom-in' || currentCursorMode === 'zoom-out' || currentCursorMode === 'pointer',
+								moveOnMouseMove: currentCursorMode === 'pan',
+								moveOnMouseWheel: false
+							}
+						])
 				: [],
 
 			series: seriesArray,
@@ -954,17 +1057,35 @@
 		};
 
 		// Depth axis config (xField is typically DEPTH for well data)
+		// Use fixed bounds if provided (for shared depth axis in correlation view)
 		const depthAxisConfig = {
 			...axisStyle,
-			name: xField.config?.displayName ?? xField.name,
-			nameGap: 40
+			name: hideYAxis ? '' : (xField.config?.displayName ?? xField.name),
+			nameGap: 40,
+			// Use fixed min/max if provided (for shared depth axis)
+			min: yAxisMin !== undefined ? yAxisMin : ('dataMin' as const),
+			max: yAxisMax !== undefined ? yAxisMax : ('dataMax' as const),
+			// Hide axis labels and ticks if hideYAxis is true
+			axisLabel: hideYAxis
+				? { show: false }
+				: { color: themeColors.mutedForeground, fontSize: 11 },
+			axisTick: hideYAxis ? { show: false } : undefined,
+			splitLine: hideYAxis
+				? { show: false }
+				: { show: true, lineStyle: { color: themeColors.border, opacity: 0.5 } }
 		};
 
-		// Value axis config (yField is the curve measurement)
+		// Value axis config (yField is the curve measurement, X-axis in well log mode)
 		const valueAxisConfig = {
 			...axisStyle,
+			type: xAxisLogScale ? ('log' as const) : ('value' as const),
 			name: yField.config?.displayName ?? yField.name,
-			nameGap: 50
+			nameGap: xAxisPosition === 'top' ? 25 : 50,
+			nameLocation: 'middle' as const,
+			min: xAxisMin !== undefined ? xAxisMin : ('dataMin' as const),
+			max: xAxisMax !== undefined ? xAxisMax : ('dataMax' as const),
+			// Position at top for well log correlation view
+			position: xAxisPosition === 'top' ? ('top' as const) : ('bottom' as const)
 		};
 
 		// Calculate optimal sample count based on container width
@@ -1124,10 +1245,12 @@
 
 			// Grid (chart area) - add right margin for visualMap if crossplot with curve coloring
 			grid: {
-				left: 70,
-				right: (isCrossplot && colorMode === 'curve') ? 100 : 30,
-				top: title ? 50 : 30,
-				bottom: enableZoom ? 60 : 40,
+				left: hideYAxis ? 5 : 70,
+				right: (isCrossplot && colorMode === 'curve') ? 100 : 5,
+				// When X-axis is at top, increase top margin for axis labels
+				top: xAxisPosition === 'top' ? 45 : (title ? 50 : 30),
+				// When X-axis is at top, reduce bottom margin
+				bottom: xAxisPosition === 'top' ? 5 : (enableZoom ? 60 : 40),
 				containLabel: false
 			},
 
@@ -1136,35 +1259,49 @@
 			// For standard charts: data is [depth, value], so X=depth, Y=value
 			xAxis: shouldInvertY
 				? { ...valueAxisConfig, inverse: false } // Well log: X-axis shows value (not inverted)
-				: { ...depthAxisConfig, inverse: false }, // Standard: X-axis shows depth
+				: { ...depthAxisConfig, inverse: false, position: xAxisPosition }, // Standard: X-axis shows depth
 			yAxis: shouldInvertY
 				? { ...depthAxisConfig, inverse: true } // Well log: Y-axis shows depth (inverted - increases downward)
 				: { ...valueAxisConfig, inverse: false }, // Standard: Y-axis shows value
 
 			// DataZoom for pan/zoom - configure based on cursor mode
+			// When yAxisOnlyZoom is true (correlation view), only allow Y-axis (depth) zooming
 			dataZoom: enableZoom
-				? [
-						{
-							type: 'inside',
-							xAxisIndex: 0,
-							filterMode: 'none',
-							throttle: 50,
-							// Zoom only enabled when cursor mode is zoom-in or zoom-out
-							zoomOnMouseWheel: currentCursorMode === 'zoom-in' || currentCursorMode === 'zoom-out' || currentCursorMode === 'pointer',
-							// Move only enabled when cursor mode is pan
-							moveOnMouseMove: currentCursorMode === 'pan',
-							moveOnMouseWheel: false
-						},
-						{
-							type: 'inside',
-							yAxisIndex: 0,
-							filterMode: 'none',
-							throttle: 50,
-							zoomOnMouseWheel: currentCursorMode === 'zoom-in' || currentCursorMode === 'zoom-out' || currentCursorMode === 'pointer',
-							moveOnMouseMove: currentCursorMode === 'pan',
-							moveOnMouseWheel: false
-						}
-					]
+				? (yAxisOnlyZoom
+					? [
+							// Y-axis only zoom for correlation view
+							{
+								type: 'inside',
+								yAxisIndex: 0,
+								filterMode: 'none',
+								throttle: 50,
+								zoomOnMouseWheel: true,
+								moveOnMouseMove: currentCursorMode === 'pan',
+								moveOnMouseWheel: false
+							}
+						]
+					: [
+							{
+								type: 'inside',
+								xAxisIndex: 0,
+								filterMode: 'none',
+								throttle: 50,
+								// Zoom only enabled when cursor mode is zoom-in or zoom-out
+								zoomOnMouseWheel: currentCursorMode === 'zoom-in' || currentCursorMode === 'zoom-out' || currentCursorMode === 'pointer',
+								// Move only enabled when cursor mode is pan
+								moveOnMouseMove: currentCursorMode === 'pan',
+								moveOnMouseWheel: false
+							},
+							{
+								type: 'inside',
+								yAxisIndex: 0,
+								filterMode: 'none',
+								throttle: 50,
+								zoomOnMouseWheel: currentCursorMode === 'zoom-in' || currentCursorMode === 'zoom-out' || currentCursorMode === 'pointer',
+								moveOnMouseMove: currentCursorMode === 'pan',
+								moveOnMouseWheel: false
+							}
+						])
 				: [],
 
 			// Brush component for crossplot selection

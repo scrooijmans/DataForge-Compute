@@ -9,6 +9,8 @@
  */
 
 import type { ChartType } from '$lib/charts/types';
+import type { CorrelationConfig } from '$lib/charts/correlation-types';
+import { createDefaultCorrelationConfig } from '$lib/charts/correlation-types';
 
 // ============================================================================
 // Base Configuration Types
@@ -257,7 +259,8 @@ export type ChartConfiguration =
 	| ScatterChartConfig
 	| HistogramConfig
 	| CrossPlotConfig
-	| WellLogConfig;
+	| WellLogConfig
+	| CorrelationConfig;
 
 // ============================================================================
 // Default Configurations
@@ -408,9 +411,13 @@ export function getChartTypeName(chartType: string): string {
 		'crossplot': 'Cross Plot',
 		'welllog': 'Well Log',
 		'linked-charts': 'Linked Charts',
+		'correlation': 'Well Correlation',
 	};
 	return names[chartType] ?? chartType;
 }
+
+// Re-export correlation config factory for convenience
+export { createDefaultCorrelationConfig };
 
 /**
  * Get available color presets

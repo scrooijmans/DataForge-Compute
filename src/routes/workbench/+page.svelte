@@ -42,17 +42,29 @@
 	 * Handle adding a chart from the toolbar
 	 * Creates a new pane of the specified chart type
 	 */
-	function handleAddChart(type: 'line' | 'scatter' | 'histogram' | 'crossplot' | 'welllog') {
+	function handleAddChart(type: 'line' | 'scatter' | 'histogram' | 'crossplot' | 'welllog' | 'correlation') {
 		// Map toolbar types to pane types
 		const paneTypeMap: Record<string, PaneType> = {
 			line: PaneType.LineChart,
 			scatter: PaneType.ScatterChart,
 			histogram: PaneType.Histogram,
 			crossplot: PaneType.CrossPlot,
-			welllog: PaneType.WellLog
+			welllog: PaneType.WellLog,
+			correlation: PaneType.Correlation
 		};
 
 		const paneType = paneTypeMap[type] ?? PaneType.LineChart;
+
+		// Generate appropriate title based on chart type
+		const titleMap: Record<string, string> = {
+			line: 'Line Chart',
+			scatter: 'Scatter Plot',
+			histogram: 'Histogram',
+			crossplot: 'Crossplot',
+			welllog: 'Well Log',
+			correlation: 'Well Correlation'
+		};
+		const title = titleMap[type] ?? `${type.charAt(0).toUpperCase() + type.slice(1)} Chart`;
 
 		// Add a new pane to the workspace
 		// If there's an active pane, split from it; otherwise create at root
@@ -62,9 +74,7 @@
 			workspaceManager.splitPane(activePaneId, 'right', paneType);
 		} else {
 			// Add as first pane if workspace is empty
-			workspaceManager.addPane(paneType, {}, {
-				title: `${type.charAt(0).toUpperCase() + type.slice(1)} Chart`
-			});
+			workspaceManager.addPane(paneType, {}, { title });
 		}
 	}
 

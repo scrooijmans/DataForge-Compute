@@ -409,6 +409,13 @@ export function registerChartPaneFactories(factory: PaneFactoryImpl): void {
 	);
 
 	factory.register(
+		PaneType.Correlation,
+		(id, config) => new ChartPaneInstance(id, PaneType.Correlation, config),
+		'Well Correlation',
+		'chart-correlation'
+	);
+
+	factory.register(
 		PaneType.DataGrid,
 		(id, config) => new DataGridPaneInstance(id, config),
 		'Data Grid',

@@ -31,6 +31,11 @@
 	import EChartsChart from '$lib/components/charts/EChartsChart.svelte';
 	import LinkedChartsView from '$lib/components/charts/LinkedChartsView.svelte';
 	import TablePane from '$lib/components/panes/TablePane.svelte';
+	import WellCorrelationPanel from '$lib/components/correlation/WellCorrelationPanel.svelte';
+
+	// Import correlation types
+	import type { CorrelationConfig, CorrelationCurveData } from '$lib/charts/correlation-types';
+	import { calculateGlobalDepthRange } from '$lib/charts/correlation-types';
 
 	interface Props {
 		/** Pane node data */
@@ -83,6 +88,47 @@
 
 	/** Extract segmented chart data reactively from pane (new segment-based architecture) */
 	let segmentedChartData = $derived(pane?.config?.segmentedChartData as import('$lib/types').SegmentedCurveData | undefined);
+
+	/** Extract correlation config for correlation pane type */
+	let correlationConfig = $derived.by(() => {
+		if (pane?.paneType !== PaneType.Correlation) return null;
+		const config = pane?.config?.chartConfig as unknown as CorrelationConfig | null;
+		console.log('[PaneContainer] Extracted correlationConfig:', {
+			paneId: pane?.id,
+			hasConfig: !!config,
+			wellCount: config?.wells?.length
+		});
+		return config;
+	});
+
+	/** Extract correlation curve data map */
+	let correlationCurveData = $derived.by(() => {
+		if (!correlationConfig) return new Map<string, CorrelationCurveData>();
+		const data = pane?.config?.options?.correlationCurveData;
+		console.log('[PaneContainer] Extracting correlationCurveData:', {
+			paneId: pane?.id,
+			hasData: !!data,
+			isMap: data instanceof Map,
+			rawDataType: typeof data,
+			rawDataKeys: data instanceof Map ? Array.from(data.keys()) : 'not a map'
+		});
+		if (data instanceof Map) return data as Map<string, CorrelationCurveData>;
+		return new Map<string, CorrelationCurveData>();
+	});
+
+	/** Calculate depth range for correlation panel */
+	let correlationDepthRange = $derived.by(() => {
+		if (!correlationConfig) return { min: 0, max: 1000 };
+		if (correlationConfig.depthRange.autoScale) {
+			const range = calculateGlobalDepthRange(correlationCurveData);
+			console.log('[PaneContainer] Auto-calculated depth range:', range, 'from', correlationCurveData.size, 'curves');
+			return range;
+		}
+		return {
+			min: correlationConfig.depthRange.min ?? 0,
+			max: correlationConfig.depthRange.max ?? 1000
+		};
+	});
 
 	/** Extract series config for EChartsChart */
 	let seriesConfig = $derived.by(() => {
@@ -310,13 +356,30 @@
 					series={seriesConfig}
 					showCursor={chartConfig?.showCursor ?? true}
 					enableZoom={chartConfig?.enableZoom ?? true}
-					linkGroup={chartConfig?.linkedGroup ?? pane.config?.linkedGroup}
+					linkGroup={(chartConfig as { linkedGroup?: string } | undefined)?.linkedGroup ?? pane.config?.linkedGroup}
 					{showRegression}
 				/>
 			</div>
 		{:else if pane.paneType === PaneType.LinkedCharts}
 			<!-- Render linked charts view -->
 			<LinkedChartsView tracks={[]} height={height - 36} />
+		{:else if pane.paneType === PaneType.Correlation}
+			<!-- Render well correlation panel -->
+			{#if correlationConfig}
+				<WellCorrelationPanel
+					config={correlationConfig}
+					curveData={correlationCurveData}
+					depthRange={correlationDepthRange}
+					height={height - 36}
+				/>
+			{:else}
+				<div class="pane-empty">
+					<div class="pane-empty-content">
+						<div class="pane-empty-icon">📊</div>
+						<p class="pane-empty-text">Configure wells and curves in the settings panel</p>
+					</div>
+				</div>
+			{/if}
 		{:else if pane.paneType === PaneType.Table}
 			<!-- Render table pane for UDF output -->
 			<TablePane

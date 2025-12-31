@@ -11,7 +11,7 @@
 		disabled?: boolean;
 	}
 
-	type ChartType = 'line' | 'scatter' | 'histogram' | 'crossplot' | 'welllog';
+	type ChartType = 'line' | 'scatter' | 'histogram' | 'crossplot' | 'welllog' | 'correlation';
 
 	let { onAddChart, disabled = false }: Props = $props();
 
@@ -21,6 +21,12 @@
 			label: 'Well Log',
 			icon: 'M4 2v20M8 2v20M4 6h4M4 10h4M4 14h4M4 18h4M12 2c0 4 4 4 4 8s-4 4-4 8 4 4 4 8',
 			description: 'Single curve well log (Depth on Y-axis)'
+		},
+		{
+			type: 'correlation',
+			label: 'Correlation',
+			icon: 'M3 3v18h18M6 21V10M10 21V6M14 21V12M18 21V8M6 10h12',
+			description: 'Multi-well correlation panel'
 		},
 		{
 			type: 'line',

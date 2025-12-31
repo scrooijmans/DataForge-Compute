@@ -309,22 +309,61 @@ class ChartManagerImpl {
 	}
 
 	/**
-	 * Get current viewport from chart
+	 * Get current viewport from chart's dataZoom state
+	 * Uses the dataZoom startValue/endValue for accurate viewport after zoom
 	 */
 	private getChartViewport(instance: echarts.ECharts): Viewport | null {
 		try {
 			const option = instance.getOption() as Record<string, unknown>;
-			const xAxis = (option.xAxis as Array<{ min?: number; max?: number }> | undefined)?.[0];
-			const yAxis = (option.yAxis as Array<{ min?: number; max?: number }> | undefined)?.[0];
 
-			if (!xAxis || !yAxis) return null;
+			// Get axis min/max as fallback
+			const xAxis = (option.xAxis as Array<{ min?: number | 'dataMin'; max?: number | 'dataMax' }> | undefined)?.[0];
+			const yAxis = (option.yAxis as Array<{ min?: number | 'dataMin'; max?: number | 'dataMax' }> | undefined)?.[0];
 
-			return {
-				xMin: xAxis.min ?? 0,
-				xMax: xAxis.max ?? 1,
-				yMin: yAxis.min ?? 0,
-				yMax: yAxis.max ?? 1
-			};
+			let xMin = 0, xMax = 1, yMin = 0, yMax = 1;
+
+			// Check dataZoom for actual zoomed values
+			const dataZoom = option.dataZoom as Array<{
+				yAxisIndex?: number;
+				xAxisIndex?: number;
+				start?: number;
+				end?: number;
+				startValue?: number;
+				endValue?: number;
+			}> | undefined;
+
+			if (dataZoom && dataZoom.length > 0) {
+				// Find Y-axis zoom (depth axis for well logs)
+				const yZoom = dataZoom.find(dz => dz.yAxisIndex === 0);
+				if (yZoom) {
+					// Use startValue/endValue if available (actual data values)
+					if (yZoom.startValue !== undefined && yZoom.endValue !== undefined) {
+						yMin = yZoom.startValue;
+						yMax = yZoom.endValue;
+					}
+				}
+
+				// Find X-axis zoom
+				const xZoom = dataZoom.find(dz => dz.xAxisIndex === 0);
+				if (xZoom) {
+					if (xZoom.startValue !== undefined && xZoom.endValue !== undefined) {
+						xMin = xZoom.startValue;
+						xMax = xZoom.endValue;
+					}
+				}
+			}
+
+			// Fallback to axis config if no zoom values
+			if (yMin === 0 && yMax === 1) {
+				if (typeof yAxis?.min === 'number') yMin = yAxis.min;
+				if (typeof yAxis?.max === 'number') yMax = yAxis.max;
+			}
+			if (xMin === 0 && xMax === 1) {
+				if (typeof xAxis?.min === 'number') xMin = xAxis.min;
+				if (typeof xAxis?.max === 'number') xMax = xAxis.max;
+			}
+
+			return { xMin, xMax, yMin, yMax };
 		} catch {
 			return null;
 		}

@@ -14,6 +14,7 @@
 	import ChartConfigPanel from './ChartConfigPanel.svelte';
 	import ParameterForm from '$lib/components/ParameterForm.svelte';
 	import type { ChartDataFrame } from '$lib/charts/types';
+	import type { CorrelationCurveData } from '$lib/charts/correlation-types';
 
 	interface Props {
 		/** Available wells */
@@ -80,6 +81,50 @@
 			console.log('[ContextToolbar] No selected pane, cannot update segmented data');
 		}
 	}
+
+	/**
+	 * Handle correlation curve data changes (for correlation panels)
+	 * This stores curve data in a Map keyed by track ID
+	 */
+	function handleCorrelationCurveDataChange(trackId: string, data: CorrelationCurveData | null): void {
+		console.log('[ContextToolbar] handleCorrelationCurveDataChange called:', { trackId, hasData: !!data, points: data?.totalPoints });
+		if ($selectedPane) {
+			const paneId = $selectedPane.paneId;
+
+			// Get the CURRENT pane config from workspace manager (not the cached selection)
+			const currentPane = workspaceManager.getPaneById(paneId);
+			if (!currentPane) {
+				console.log('[ContextToolbar] Could not find pane in workspace:', paneId);
+				return;
+			}
+
+			const existingOptions = currentPane.config?.options ?? {};
+			const existingMap = existingOptions.correlationCurveData as Map<string, CorrelationCurveData> | undefined;
+			const curveDataMap = new Map(existingMap ?? []);
+
+			console.log('[ContextToolbar] Existing map size:', curveDataMap.size, 'keys:', Array.from(curveDataMap.keys()));
+
+			if (data) {
+				curveDataMap.set(trackId, data);
+				console.log('[ContextToolbar] Added curve data for track:', trackId, 'Map size:', curveDataMap.size);
+			} else {
+				curveDataMap.delete(trackId);
+				console.log('[ContextToolbar] Removed curve data for track:', trackId);
+			}
+
+			// Update the pane config with the new map
+			workspaceManager.updatePaneConfig(paneId, {
+				options: {
+					...existingOptions,
+					correlationCurveData: curveDataMap
+				}
+			});
+
+			console.log('[ContextToolbar] Updated pane config, new map size:', curveDataMap.size);
+		} else {
+			console.log('[ContextToolbar] No selected pane, cannot update correlation data');
+		}
+	}
 </script>
 
 <div class="context-toolbar">
@@ -137,6 +182,7 @@
 					onConfigChange={handleChartConfigChange}
 					onDataChange={handleChartDataChange}
 					onSegmentedDataChange={handleSegmentedDataChange}
+					onCorrelationCurveDataChange={handleCorrelationCurveDataChange}
 				/>
 			</div>
 		</div>
