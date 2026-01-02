@@ -4,17 +4,15 @@
 	 *
 	 * Displays different content based on what is currently selected:
 	 * - UDF selected: Shows UDF parameters and execution controls
-	 * - Chart pane selected: Shows chart configuration options
+	 * - Chart pane selected: Shows hint to use settings dialog
 	 * - Nothing selected: Shows placeholder with instructions
+	 *
+	 * Note: Chart configuration has moved to ChartSettingsDialog (TradingView-style).
 	 */
-	import type { CurveInfo, WellInfo, SegmentedCurveData } from '$lib/types';
+	import type { CurveInfo, WellInfo } from '$lib/types';
 	import { selectionContext } from '$lib/panes/selection-context';
-	import type { ChartConfiguration } from '$lib/panes/chart-configs';
-	import { workspaceManager } from '$lib/panes/workspace-manager';
-	import ChartConfigPanel from './ChartConfigPanel.svelte';
 	import ParameterForm from '$lib/components/ParameterForm.svelte';
-	import type { ChartDataFrame } from '$lib/charts/types';
-	import type { CorrelationCurveData } from '$lib/charts/correlation-types';
+	import { PaneType } from '$lib/panes/layout-model';
 
 	interface Props {
 		/** Available wells */
@@ -30,99 +28,31 @@
 	let { wells, curves, well, onWellChange }: Props = $props();
 
 	/** Selection stores */
-	let selection = selectionContext.selection;
 	let selectionType = selectionContext.selectionType;
 	let selectedPane = selectionContext.selectedPane;
 	let selectedUdf = selectionContext.selectedUdf;
 
-	/**
-	 * Handle chart config changes
-	 */
-	function handleChartConfigChange(config: ChartConfiguration): void {
-		if ($selectedPane) {
-			// Update the selection context
-			selectionContext.updatePaneConfig(config);
-
-			// Also update the pane config in workspace manager
-			workspaceManager.updatePaneConfig($selectedPane.paneId, {
-				chartConfig: config as any, // Store the full chart config
-			});
-		}
-	}
-
-	/**
-	 * Handle chart data changes (when curve data is loaded)
-	 */
-	function handleChartDataChange(data: ChartDataFrame | null): void {
-		console.log('[ContextToolbar] handleChartDataChange called:', data ? `frame with ${data.length} points` : 'null');
-		if ($selectedPane) {
-			console.log('[ContextToolbar] Updating pane config for:', $selectedPane.paneId);
-			// Store the chart data in the pane config
-			workspaceManager.updatePaneConfig($selectedPane.paneId, {
-				chartData: data as any, // Store the chart data frame
-			});
-		} else {
-			console.log('[ContextToolbar] No selected pane, cannot update');
-		}
-	}
-
-	/**
-	 * Handle segmented chart data changes (new segment-based architecture)
-	 */
-	function handleSegmentedDataChange(data: SegmentedCurveData | null): void {
-		console.log('[ContextToolbar] handleSegmentedDataChange called:', data ? `${data.segments.length} segments, ${data.total_points} points` : 'null');
-		if ($selectedPane) {
-			console.log('[ContextToolbar] Updating pane segmented data for:', $selectedPane.paneId);
-			// Store the segmented chart data in the pane config
-			workspaceManager.updatePaneConfig($selectedPane.paneId, {
-				segmentedChartData: data as any, // Store the segmented chart data
-			});
-		} else {
-			console.log('[ContextToolbar] No selected pane, cannot update segmented data');
-		}
-	}
-
-	/**
-	 * Handle correlation curve data changes (for correlation panels)
-	 * This stores curve data in a Map keyed by track ID
-	 */
-	function handleCorrelationCurveDataChange(trackId: string, data: CorrelationCurveData | null): void {
-		console.log('[ContextToolbar] handleCorrelationCurveDataChange called:', { trackId, hasData: !!data, points: data?.totalPoints });
-		if ($selectedPane) {
-			const paneId = $selectedPane.paneId;
-
-			// Get the CURRENT pane config from workspace manager (not the cached selection)
-			const currentPane = workspaceManager.getPaneById(paneId);
-			if (!currentPane) {
-				console.log('[ContextToolbar] Could not find pane in workspace:', paneId);
-				return;
-			}
-
-			const existingOptions = currentPane.config?.options ?? {};
-			const existingMap = existingOptions.correlationCurveData as Map<string, CorrelationCurveData> | undefined;
-			const curveDataMap = new Map(existingMap ?? []);
-
-			console.log('[ContextToolbar] Existing map size:', curveDataMap.size, 'keys:', Array.from(curveDataMap.keys()));
-
-			if (data) {
-				curveDataMap.set(trackId, data);
-				console.log('[ContextToolbar] Added curve data for track:', trackId, 'Map size:', curveDataMap.size);
-			} else {
-				curveDataMap.delete(trackId);
-				console.log('[ContextToolbar] Removed curve data for track:', trackId);
-			}
-
-			// Update the pane config with the new map
-			workspaceManager.updatePaneConfig(paneId, {
-				options: {
-					...existingOptions,
-					correlationCurveData: curveDataMap
-				}
-			});
-
-			console.log('[ContextToolbar] Updated pane config, new map size:', curveDataMap.size);
-		} else {
-			console.log('[ContextToolbar] No selected pane, cannot update correlation data');
+	/** Get chart type name for display */
+	function getChartTypeName(paneType: PaneType | undefined): string {
+		switch (paneType) {
+			case PaneType.LineChart:
+				return 'Line Chart';
+			case PaneType.ScatterChart:
+				return 'Scatter Chart';
+			case PaneType.Histogram:
+				return 'Histogram';
+			case PaneType.CrossPlot:
+				return 'Cross Plot';
+			case PaneType.WellLog:
+				return 'Well Log';
+			case PaneType.LinkedCharts:
+				return 'Linked Charts';
+			case PaneType.Correlation:
+				return 'Correlation';
+			case PaneType.DataGrid:
+				return 'Data Grid';
+			default:
+				return 'Chart';
 		}
 	}
 </script>
@@ -158,7 +88,7 @@
 			</div>
 		</div>
 	{:else if $selectionType === 'pane' && $selectedPane}
-		<!-- Pane Selected - Show Chart Config -->
+		<!-- Pane Selected - Show hint to use settings dialog -->
 		<div class="toolbar-section">
 			<div class="section-header">
 				<span class="section-icon chart-icon">
@@ -167,23 +97,19 @@
 					</svg>
 				</span>
 				<div class="section-title-group">
-					<h3 class="section-title">Chart Settings</h3>
+					<h3 class="section-title">{getChartTypeName($selectedPane.paneNode.paneType)}</h3>
 					<span class="section-subtitle">{$selectedPane.paneNode.title}</span>
 				</div>
 			</div>
 			<div class="section-content">
-				<ChartConfigPanel
-					pane={$selectedPane.paneNode}
-					config={$selectedPane.chartConfig ?? null}
-					{wells}
-					{curves}
-					{well}
-					{onWellChange}
-					onConfigChange={handleChartConfigChange}
-					onDataChange={handleChartDataChange}
-					onSegmentedDataChange={handleSegmentedDataChange}
-					onCorrelationCurveDataChange={handleCorrelationCurveDataChange}
-				/>
+				<div class="settings-hint">
+					<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+						<path d="M12 15.5A3.5 3.5 0 0 1 8.5 12A3.5 3.5 0 0 1 12 8.5a3.5 3.5 0 0 1 3.5 3.5a3.5 3.5 0 0 1-3.5 3.5m7.43-2.53c.04-.32.07-.64.07-.97c0-.33-.03-.66-.07-1l2.11-1.63c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.31-.61-.22l-2.49 1c-.52-.39-1.06-.73-1.69-.98l-.37-2.65A.506.506 0 0 0 14 2h-4c-.25 0-.46.18-.5.42l-.37 2.65c-.63.25-1.17.59-1.69.98l-2.49-1c-.22-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64L4.57 11c-.04.34-.07.67-.07 1c0 .33.03.65.07.97l-2.11 1.66c-.19.15-.25.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1.01c.52.4 1.06.74 1.69.99l.37 2.65c.04.24.25.42.5.42h4c.25 0 .46-.18.5-.42l.37-2.65c.63-.26 1.17-.59 1.69-.99l2.49 1.01c.22.08.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.66Z" />
+					</svg>
+					<p>
+						Use the <strong>Settings</strong> button in the toolbar above to configure this chart.
+					</p>
+				</div>
 			</div>
 		</div>
 	{:else if $selectionType === 'curve'}
@@ -313,6 +239,33 @@
 	.section-content {
 		flex: 1;
 		overflow-y: auto;
+	}
+
+	.settings-hint {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		padding: 32px 24px;
+		text-align: center;
+		color: var(--color-text-tertiary, #9ca3af);
+		height: 100%;
+	}
+
+	.settings-hint svg {
+		margin-bottom: 16px;
+		opacity: 0.4;
+	}
+
+	.settings-hint p {
+		font-size: 13px;
+		line-height: 1.5;
+		margin: 0;
+		max-width: 200px;
+	}
+
+	.settings-hint strong {
+		color: var(--color-text, #111827);
 	}
 
 	.placeholder-text {

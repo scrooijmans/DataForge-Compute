@@ -83,6 +83,7 @@ export interface CommonChartOptions {
  *
  * Standard X-Y line chart for plotting any curve against another.
  * No restrictions on curve types.
+ * Supports multi-well display with same curve types across wells.
  */
 export interface LineChartConfig extends CommonChartOptions {
 	type: 'line';
@@ -94,6 +95,12 @@ export interface LineChartConfig extends CommonChartOptions {
 	style: SeriesStyle;
 	/** Interpolation method */
 	interpolation: 'linear' | 'spline' | 'step';
+	/** Selected well IDs for multi-well display */
+	selectedWellIds?: string[];
+	/** Curve type (mnemonic) for X-axis across all wells */
+	xCurveType?: string;
+	/** Curve type (mnemonic) for Y-axis across all wells */
+	yCurveType?: string;
 }
 
 /**
@@ -101,6 +108,7 @@ export interface LineChartConfig extends CommonChartOptions {
  *
  * X-Y scatter plot for correlation analysis.
  * No restrictions on curve types.
+ * Supports multi-well display with same curve types across wells.
  */
 export interface ScatterChartConfig extends CommonChartOptions {
 	type: 'scatter';
@@ -116,6 +124,12 @@ export interface ScatterChartConfig extends CommonChartOptions {
 	showTrendLine: boolean;
 	/** Trend line type */
 	trendLineType: 'linear' | 'polynomial' | 'exponential';
+	/** Selected well IDs for multi-well display */
+	selectedWellIds?: string[];
+	/** Curve type (mnemonic) for X-axis across all wells */
+	xCurveType?: string;
+	/** Curve type (mnemonic) for Y-axis across all wells */
+	yCurveType?: string;
 }
 
 /**
@@ -145,6 +159,7 @@ export interface HistogramConfig extends CommonChartOptions {
  *
  * Multi-curve cross plot with optional z-axis coloring.
  * Commonly used for petrophysical analysis.
+ * Supports multi-well display with same curve types across wells.
  */
 export interface CrossPlotConfig extends CommonChartOptions {
 	type: 'crossplot';
@@ -168,6 +183,14 @@ export interface CrossPlotConfig extends CommonChartOptions {
 	regressionType: 'linear' | 'polynomial';
 	/** Polygon regions (for cutoff analysis) */
 	polygonRegions?: PolygonRegion[];
+	/** Selected well IDs for multi-well display */
+	selectedWellIds?: string[];
+	/** Curve type (mnemonic) for X-axis across all wells */
+	xCurveType?: string;
+	/** Curve type (mnemonic) for Y-axis across all wells */
+	yCurveType?: string;
+	/** Curve type (mnemonic) for Z-axis across all wells */
+	zCurveType?: string;
 }
 
 /**

@@ -99,6 +99,25 @@ export interface SegmentedCurveData {
 	total_points: number;
 }
 
+/**
+ * Multi-well curve data for crossplot/scatter/line charts.
+ * Contains data from multiple wells with the same curve types.
+ */
+export interface MultiWellCurveData {
+	/** Well identifier */
+	wellId: string;
+	/** Well name for display */
+	wellName: string;
+	/** Well color for series */
+	wellColor: string;
+	/** X-axis curve data */
+	xCurve: SegmentedCurveData | null;
+	/** Y-axis curve data */
+	yCurve: SegmentedCurveData | null;
+	/** Z-axis curve data (optional, for crossplot color) */
+	zCurve?: SegmentedCurveData | null;
+}
+
 // UDF types
 export interface ProviderInfo {
 	id: string;

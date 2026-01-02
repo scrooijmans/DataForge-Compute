@@ -27,7 +27,7 @@
 	import { CanvasRenderer } from 'echarts/renderers';
 	import type { ChartDataFrame, ChartType, SeriesConfig } from '$lib/charts/types';
 	import { segmentedCurveToSeriesData } from '$lib/charts/types';
-	import type { SegmentedCurveData } from '$lib/types';
+	import type { SegmentedCurveData, MultiWellCurveData } from '$lib/types';
 	import { chartManager, type ChartRegistrationOptions } from '$lib/charts/chart-manager';
 	import { lttbDownsample, calculateSampleCount } from '$lib/charts/downsampling';
 	import { cursorMode, selectionMode, getCursorStyle, type CursorMode, type SelectionMode } from '$lib/stores/chartInteraction';
@@ -63,6 +63,8 @@
 		data: ChartDataFrame | null;
 		/** Segmented curve data (new format - segments without nulls) */
 		segmentedData?: SegmentedCurveData | null;
+		/** Multi-well data (for crossplot/scatter/line with multiple wells) */
+		multiWellData?: MultiWellCurveData[];
 		/** Chart type */
 		type?: ChartType;
 		/** Chart title */
@@ -109,6 +111,7 @@
 		id = `chart-${Math.random().toString(36).slice(2, 9)}`,
 		data,
 		segmentedData,
+		multiWellData,
 		type = 'line',
 		title,
 		height = 400,
@@ -815,7 +818,20 @@
 			axisTick: hideYAxis ? { show: false } : undefined,
 			splitLine: hideYAxis
 				? { show: false }
-				: { show: true, lineStyle: { color: themeColorsLocal.border, opacity: 0.5 } }
+				: { show: true, lineStyle: { color: themeColorsLocal.border, opacity: 0.5 } },
+			// Crosshair axis label showing cursor position
+			axisPointer: {
+				show: showCursor,
+				type: 'line' as const,
+				label: {
+					show: true,
+					backgroundColor: themeColorsLocal.primary,
+					color: '#ffffff',
+					fontSize: 11,
+					padding: [4, 6],
+					formatter: (params: { value: number }) => `${params.value.toFixed(1)} m`
+				}
+			}
 		};
 
 		// Value axis config (X-axis in well log mode)
@@ -834,6 +850,19 @@
 				color: themeColorsLocal.mutedForeground,
 				fontSize: 10,
 				formatter: formatCompactNumber
+			},
+			// Crosshair axis label showing cursor position
+			axisPointer: {
+				show: showCursor,
+				type: 'line' as const,
+				label: {
+					show: true,
+					backgroundColor: themeColorsLocal.primary,
+					color: '#ffffff',
+					fontSize: 11,
+					padding: [4, 6],
+					formatter: (params: { value: number }) => formatCompactNumber(params.value)
+				}
 			}
 		};
 
@@ -872,25 +901,12 @@
 
 			tooltip: showCursor
 				? {
+						show: false, // Hide tooltip box - we use axis labels instead
 						trigger: 'axis',
 						axisPointer: {
-							type: 'line',
+							type: 'cross',
+							crossStyle: { color: themeColorsLocal.primary, opacity: 0.8 },
 							lineStyle: { color: themeColorsLocal.primary, opacity: 0.5 }
-						},
-						backgroundColor: themeColorsLocal.popover,
-						borderColor: themeColorsLocal.border,
-						textStyle: { color: themeColorsLocal.popoverForeground, fontSize: 12 },
-						formatter: (params: unknown) => {
-							const p = Array.isArray(params) ? params[0] : params;
-							if (!p || typeof p !== 'object' || !('data' in p)) return '';
-							const d = p.data as number[];
-							if (shouldInvertY) {
-								// Well log: X = value, Y = depth
-								return `${segmentedData.mnemonic}: ${d[0]?.toFixed(4) ?? '-'}<br/>Depth: ${d[1]?.toFixed(2) ?? '-'} m`;
-							} else {
-								// Standard: X = depth, Y = value
-								return `Depth: ${d[0]?.toFixed(2) ?? '-'} m<br/>${segmentedData.mnemonic}: ${d[1]?.toFixed(4) ?? '-'}`;
-							}
 						}
 					}
 				: undefined,
@@ -959,10 +975,196 @@
 	}
 
 	/**
+	 * Build ECharts options from multi-well data (crossplot/scatter/line with multiple wells)
+	 */
+	function buildOptionsFromMultiWell(): echarts.EChartsCoreOption | null {
+		if (!multiWellData || multiWellData.length === 0) {
+			return null;
+		}
+
+		console.log('[buildOptionsFromMultiWell] Building multi-well chart:', {
+			wellCount: multiWellData.length,
+			wells: multiWellData.map(w => ({ name: w.wellName, hasX: !!w.xCurve, hasY: !!w.yCurve }))
+		});
+
+		const isScatter = type === 'scatter' || type === 'crossplot';
+
+		// Build series for each well
+		const seriesArray: Array<{
+			name: string;
+			type: 'scatter' | 'line';
+			data: Array<[number, number]>;
+			symbol: string;
+			symbolSize: number;
+			showSymbol: boolean;
+			itemStyle: { color: string };
+			lineStyle?: { color: string; width: number };
+		}> = [];
+		let allXMin = Infinity, allXMax = -Infinity;
+		let allYMin = Infinity, allYMax = -Infinity;
+
+		for (const wellData of multiWellData) {
+			if (!wellData.xCurve || !wellData.yCurve) continue;
+
+			// Pair X and Y values by depth
+			const xByDepth = new Map<number, number>();
+			for (const seg of wellData.xCurve.segments) {
+				for (let i = 0; i < seg.depths.length; i++) {
+					const depth = Math.round(seg.depths[i] * 10000) / 10000;
+					xByDepth.set(depth, seg.values[i]);
+				}
+			}
+
+			const pairedData: Array<[number, number]> = [];
+			for (const seg of wellData.yCurve.segments) {
+				for (let i = 0; i < seg.depths.length; i++) {
+					const depth = Math.round(seg.depths[i] * 10000) / 10000;
+					const xVal = xByDepth.get(depth);
+					if (xVal !== undefined) {
+						pairedData.push([xVal, seg.values[i]]);
+						allXMin = Math.min(allXMin, xVal);
+						allXMax = Math.max(allXMax, xVal);
+						allYMin = Math.min(allYMin, seg.values[i]);
+						allYMax = Math.max(allYMax, seg.values[i]);
+					}
+				}
+			}
+
+			if (pairedData.length === 0) continue;
+
+			// Downsample if needed
+			const targetPoints = calculateSampleCount(containerWidth, 2);
+			const sampledData = pairedData.length > targetPoints
+				? lttbDownsample(
+						new Float64Array(pairedData.map(p => p[0])),
+						pairedData.length,
+						(i) => pairedData[i][0],
+						(i) => pairedData[i][1],
+						targetPoints
+					)
+				: pairedData;
+
+			seriesArray.push({
+				name: wellData.wellName,
+				type: isScatter ? 'scatter' : 'line',
+				data: sampledData,
+				symbol: isScatter ? 'circle' : 'none',
+				symbolSize: isScatter ? 4 : 0,
+				showSymbol: isScatter,
+				itemStyle: { color: wellData.wellColor },
+				lineStyle: isScatter ? undefined : { color: wellData.wellColor, width: 2 }
+			});
+		}
+
+		if (seriesArray.length === 0) {
+			return null;
+		}
+
+		// Get axis names from first well's data
+		const xAxisName = multiWellData[0].xCurve?.mnemonic ?? 'X';
+		const yAxisName = multiWellData[0].yCurve?.mnemonic ?? 'Y';
+
+		return {
+			title: title ? {
+				text: title,
+				left: 'center',
+				top: 5,
+				textStyle: { fontSize: 14, fontWeight: 600, color: themeColors.foreground }
+			} : undefined,
+
+			legend: {
+				show: true,
+				bottom: enableZoom ? 50 : 10,
+				data: multiWellData.map(w => w.wellName),
+				textStyle: { color: themeColors.mutedForeground, fontSize: 11 }
+			},
+
+			tooltip: showCursor ? {
+				show: false,
+				trigger: 'item',
+				axisPointer: {
+					type: 'cross',
+					crossStyle: { color: themeColors.primary, opacity: 0.8 }
+				}
+			} : undefined,
+
+			grid: {
+				left: 70,
+				right: 20,
+				top: title ? 50 : 30,
+				bottom: enableZoom ? 80 : 50,
+				containLabel: false
+			},
+
+			xAxis: {
+				type: 'value',
+				name: xAxisName,
+				nameLocation: 'middle',
+				nameGap: 35,
+				min: allXMin !== Infinity ? allXMin : undefined,
+				max: allXMax !== -Infinity ? allXMax : undefined,
+				axisLine: { show: true, lineStyle: { color: themeColors.border } },
+				axisLabel: { color: themeColors.mutedForeground, fontSize: 11, formatter: formatCompactNumber },
+				splitLine: { show: true, lineStyle: { color: themeColors.border, opacity: 0.5 } },
+				axisPointer: {
+					show: showCursor,
+					type: 'line',
+					label: {
+						show: true,
+						backgroundColor: themeColors.primary,
+						color: '#ffffff',
+						fontSize: 11,
+						padding: [4, 6],
+						formatter: (params: { value: number }) => formatCompactNumber(params.value)
+					}
+				}
+			},
+
+			yAxis: {
+				type: 'value',
+				name: yAxisName,
+				nameLocation: 'middle',
+				nameGap: 50,
+				min: allYMin !== Infinity ? allYMin : undefined,
+				max: allYMax !== -Infinity ? allYMax : undefined,
+				axisLine: { show: true, lineStyle: { color: themeColors.border } },
+				axisLabel: { color: themeColors.mutedForeground, fontSize: 11, formatter: formatCompactNumber },
+				splitLine: { show: true, lineStyle: { color: themeColors.border, opacity: 0.5 } },
+				axisPointer: {
+					show: showCursor,
+					type: 'line',
+					label: {
+						show: true,
+						backgroundColor: themeColors.primary,
+						color: '#ffffff',
+						fontSize: 11,
+						padding: [4, 6],
+						formatter: (params: { value: number }) => formatCompactNumber(params.value)
+					}
+				}
+			},
+
+			dataZoom: enableZoom ? [
+				{ type: 'inside', xAxisIndex: 0, yAxisIndex: 0, zoomOnMouseWheel: true, moveOnMouseMove: true },
+				{ type: 'slider', xAxisIndex: 0, bottom: 20, height: 20 }
+			] : undefined,
+
+			series: seriesArray,
+			animation: false
+		};
+	}
+
+	/**
 	 * Build ECharts option from props
 	 */
 	function buildOptions(): echarts.EChartsCoreOption {
-		// Prefer segmented data if available (new architecture)
+		// First try multi-well data (for crossplot/scatter/line with multiple wells)
+		const multiWellOptions = buildOptionsFromMultiWell();
+		if (multiWellOptions) {
+			return multiWellOptions;
+		}
+
+		// Then try segmented data (new architecture)
 		const segmentedOptions = buildOptionsFromSegments();
 		if (segmentedOptions) {
 			return segmentedOptions;
@@ -1072,7 +1274,20 @@
 			axisTick: hideYAxis ? { show: false } : undefined,
 			splitLine: hideYAxis
 				? { show: false }
-				: { show: true, lineStyle: { color: themeColors.border, opacity: 0.5 } }
+				: { show: true, lineStyle: { color: themeColors.border, opacity: 0.5 } },
+			// Crosshair axis label showing cursor position
+			axisPointer: {
+				show: showCursor,
+				type: 'line' as const,
+				label: {
+					show: true,
+					backgroundColor: themeColors.primary,
+					color: '#ffffff',
+					fontSize: 11,
+					padding: [4, 6],
+					formatter: (params: { value: number }) => `${params.value.toFixed(1)} m`
+				}
+			}
 		};
 
 		// Value axis config (yField is the curve measurement, X-axis in well log mode)
@@ -1085,7 +1300,20 @@
 			min: xAxisMin !== undefined ? xAxisMin : ('dataMin' as const),
 			max: xAxisMax !== undefined ? xAxisMax : ('dataMax' as const),
 			// Position at top for well log correlation view
-			position: xAxisPosition === 'top' ? ('top' as const) : ('bottom' as const)
+			position: xAxisPosition === 'top' ? ('top' as const) : ('bottom' as const),
+			// Crosshair axis label showing cursor position
+			axisPointer: {
+				show: showCursor,
+				type: 'line' as const,
+				label: {
+					show: true,
+					backgroundColor: themeColors.primary,
+					color: '#ffffff',
+					fontSize: 11,
+					padding: [4, 6],
+					formatter: (params: { value: number }) => formatCompactNumber(params.value)
+				}
+			}
 		};
 
 		// Calculate optimal sample count based on container width
@@ -1202,40 +1430,15 @@
 					}
 				: undefined,
 
-			// Tooltip (crosshair) - simplified for performance
+			// Tooltip (crosshair) - use cross type with axis labels
 			tooltip: showCursor
 				? {
+						show: false, // Hide tooltip box - we use axis labels instead
 						trigger: isCrossplot ? 'item' : 'axis',
 						axisPointer: {
-							type: 'line',
+							type: 'cross',
+							crossStyle: { color: themeColors.primary, opacity: 0.8 },
 							lineStyle: { color: themeColors.primary, opacity: 0.5 }
-						},
-						backgroundColor: themeColors.popover,
-						borderColor: themeColors.border,
-						textStyle: { color: themeColors.popoverForeground, fontSize: 12 },
-						formatter: (params: unknown) => {
-							const p = Array.isArray(params) ? params[0] : params;
-							if (!p || typeof p !== 'object' || !('data' in p)) return '';
-							const d = p.data as number[];
-
-							if (isCrossplot) {
-								// Crossplot: show X, Y, and optionally Z
-								let tooltip = `${xField.name}: ${d[0]?.toFixed(4) ?? '-'}<br/>${yField.name}: ${d[1]?.toFixed(4) ?? '-'}`;
-								if (colorMode === 'curve' && zField && d.length > 2) {
-									tooltip += `<br/>${zField.name}: ${d[2]?.toFixed(4) ?? '-'}`;
-								}
-								return tooltip;
-							} else if (isWellLog || (isDepthPlot && shouldInvertY)) {
-								// Well log: X = value, Y = depth
-								const depthLabel = xField.name === 'DEPTH' ? 'Depth' : xField.name;
-								return `${yField.name}: ${d[0]?.toFixed(4) ?? '-'}<br/>${depthLabel}: ${d[1]?.toFixed(2) ?? '-'} m`;
-							} else if (isDepthPlot) {
-								// Standard depth plot: X = depth, Y = value
-								return `Depth: ${d[0]?.toFixed(2) ?? '-'} m<br/>${yField.name}: ${d[1]?.toFixed(4) ?? '-'}`;
-							} else {
-								// Curve vs curve: X = xField, Y = yField
-								return `${xField.name}: ${d[0]?.toFixed(4) ?? '-'}<br/>${yField.name}: ${d[1]?.toFixed(4) ?? '-'}`;
-							}
 						}
 					}
 				: undefined,
@@ -1702,8 +1905,12 @@
 		void segmentedData?.total_points;
 		void segmentedData?.segments?.length;
 
+		// Track multi-well data changes
+		void multiWellData?.length;
+		void multiWellData?.map(w => `${w.wellId}-${w.xCurve?.curve_id}-${w.yCurve?.curve_id}`);
+
 		// Need at least one data source
-		if (!data && !segmentedData) return;
+		if (!data && !segmentedData && (!multiWellData || multiWellData.length === 0)) return;
 
 		console.log('[EChartsChart] Data effect triggered:', {
 			dataId: data?.id,

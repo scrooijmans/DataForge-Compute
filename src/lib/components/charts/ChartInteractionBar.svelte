@@ -1,12 +1,12 @@
 <script lang="ts">
 	/**
-	 * ChartInteractionBar - Toolbar for chart interaction modes
+	 * ChartInteractionBar - Vertical toolbar for chart interaction modes
 	 *
 	 * Displays interaction mode buttons based on the currently selected chart type.
-	 * Inspired by QGIS toolbar modes and SciChart cursor modifiers.
+	 * Inspired by TradingView's left-side vertical toolbar.
 	 *
 	 * Features:
-	 * - Shows/hides based on active chart type
+	 * - Vertical layout on left side of charts
 	 * - Toggle between cursor modes (pointer, crosshair, zoom, pan)
 	 * - Visual feedback for active mode
 	 * - Extensible for future chart-specific tools
@@ -17,21 +17,18 @@
 		cursorMode,
 		selectionMode,
 		activePaneSupportsInteraction,
-		activePaneType,
 		activePaneSupportsBrushSelection,
 		CURSOR_MODES,
 		SELECTION_MODES,
 		type CursorMode,
 		type SelectionMode,
 	} from '$lib/stores/chartInteraction';
-	import { PaneType } from '$lib/panes/layout-model';
 
 	// Current mode from store
 	let currentMode = $derived($cursorMode);
 	let currentSelectionMode = $derived($selectionMode);
 	let showBar = $derived($activePaneSupportsInteraction);
 	let showSelectionTools = $derived($activePaneSupportsBrushSelection);
-	let paneType = $derived($activePaneType);
 
 	/**
 	 * Handle mode button click
@@ -49,24 +46,6 @@
 			chartInteractionStore.setSelectionMode('none');
 		} else {
 			chartInteractionStore.setSelectionMode(mode);
-		}
-	}
-
-	/**
-	 * Get display name for pane type
-	 */
-	function getPaneTypeName(type: PaneType | null): string {
-		switch (type) {
-			case PaneType.LineChart:
-				return 'Line Chart';
-			case PaneType.ScatterChart:
-				return 'Scatter Chart';
-			case PaneType.CrossPlot:
-				return 'Cross Plot';
-			case PaneType.WellLog:
-				return 'Well Log';
-			default:
-				return 'Chart';
 		}
 	}
 
@@ -113,18 +92,7 @@
 </script>
 
 <div class="chart-interaction-bar">
-	<!-- Chart type indicator -->
-	<span class="chart-type-label">
-		{#if showBar}
-			{getPaneTypeName(paneType)}
-		{:else}
-			No Chart Selected
-		{/if}
-	</span>
-
-	<div class="separator"></div>
-
-	<!-- Mode buttons -->
+	<!-- Cursor mode buttons - vertical stack -->
 	<div class="mode-buttons">
 		{#each CURSOR_MODES as mode (mode.id)}
 			<button
@@ -144,18 +112,9 @@
 		{/each}
 	</div>
 
-	<div class="separator"></div>
-
-	<!-- Mode name display -->
-	<span class="mode-label">
-		{CURSOR_MODES.find((m) => m.id === currentMode)?.label ?? 'Pointer'}
-	</span>
-
 	<!-- Selection tools (crossplot only) -->
 	{#if showSelectionTools}
 		<div class="separator"></div>
-
-		<span class="section-label">Selection</span>
 
 		<div class="mode-buttons">
 			{#each SELECTION_MODES as mode (mode.id)}
@@ -173,42 +132,32 @@
 				</button>
 			{/each}
 		</div>
-
-		{#if currentSelectionMode !== 'none'}
-			<span class="mode-label">
-				{SELECTION_MODES.find((m) => m.id === currentSelectionMode)?.label ?? ''}
-			</span>
-		{/if}
 	{/if}
 </div>
 
 <style>
 	.chart-interaction-bar {
 		display: flex;
+		flex-direction: column;
 		align-items: center;
-		gap: 8px;
-		padding: 4px 12px;
+		gap: 4px;
+		padding: 8px 4px;
 		background: hsl(var(--muted));
-		border-bottom: 1px solid hsl(var(--border));
-		min-height: 32px;
-	}
-
-	.chart-type-label {
-		font-size: 11px;
-		font-weight: 500;
-		color: hsl(var(--muted-foreground));
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
+		border-right: 1px solid hsl(var(--border));
+		width: 40px;
+		flex-shrink: 0;
 	}
 
 	.separator {
-		width: 1px;
-		height: 16px;
+		width: 24px;
+		height: 1px;
 		background: hsl(var(--border));
+		margin: 4px 0;
 	}
 
 	.mode-buttons {
 		display: flex;
+		flex-direction: column;
 		gap: 2px;
 	}
 
@@ -216,8 +165,8 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		width: 28px;
-		height: 28px;
+		width: 32px;
+		height: 32px;
 		padding: 0;
 		border: 1px solid transparent;
 		border-radius: 4px;
@@ -259,21 +208,7 @@
 	}
 
 	.mode-icon {
-		width: 16px;
-		height: 16px;
-	}
-
-	.mode-label {
-		font-size: 12px;
-		color: hsl(var(--foreground));
-		min-width: 60px;
-	}
-
-	.section-label {
-		font-size: 11px;
-		font-weight: 500;
-		color: hsl(var(--muted-foreground));
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
+		width: 18px;
+		height: 18px;
 	}
 </style>

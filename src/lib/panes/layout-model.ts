@@ -11,7 +11,7 @@
  */
 
 import type { ChartConfig, ChartDataFrame } from '../charts/types';
-import type { SegmentedCurveData } from '$lib/types';
+import type { SegmentedCurveData, MultiWellCurveData } from '$lib/types';
 
 // ============================================================================
 // Layout Node Types
@@ -109,6 +109,8 @@ export interface PaneConfig {
 	chartData?: ChartDataFrame;
 	/** Segmented chart data for rendering (new segment-based format - no nulls) */
 	segmentedChartData?: SegmentedCurveData;
+	/** Multi-well data for crossplot/scatter/line charts with multiple wells */
+	multiWellData?: MultiWellCurveData[];
 	/** Linked group for cursor/viewport sync */
 	linkedGroup?: string;
 	/** Additional pane-specific options */

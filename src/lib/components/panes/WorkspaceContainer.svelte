@@ -15,12 +15,27 @@
 	 */
 	import { onMount } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
+	import { get } from 'svelte/store';
 	import { workspaceManager, PaneType } from '$lib/panes/workspace-manager';
-	import type { WorkspaceLayout } from '$lib/panes/layout-model';
+	import type { WorkspaceLayout, PaneNode, LayoutNode } from '$lib/panes/layout-model';
 	import LayoutRenderer from './LayoutRenderer.svelte';
 	import ChartInteractionBar from '$lib/components/charts/ChartInteractionBar.svelte';
-	import { selectedWorkspaceId, previousWorkspaceIdForLayout } from '$lib/stores/compute';
+	import ChartSettingsToolbar from '$lib/components/charts/ChartSettingsToolbar.svelte';
+	import ChartSettingsDialog from '$lib/components/charts/ChartSettingsDialog.svelte';
+	import { selectedWorkspaceId, previousWorkspaceIdForLayout, wells, curves, selectedWell, selectWell, allWorkspaceCurves } from '$lib/stores/compute';
+	import { loadSegmentedCurveData } from '$lib/stores/dataStore';
+	import { selectionContext } from '$lib/panes/selection-context';
 	import { untrack } from 'svelte';
+	import type {
+		ChartConfiguration,
+		WellLogConfig,
+		CrossPlotConfig,
+		ScatterChartConfig,
+		LineChartConfig,
+		HistogramConfig
+	} from '$lib/panes/chart-configs';
+	import type { CorrelationConfig, CorrelationCurveData } from '$lib/charts/correlation-types';
+	import type { SegmentedCurveData, MultiWellCurveData } from '$lib/types';
 
 	/**
 	 * ChartLayout returned from Tauri backend
@@ -61,6 +76,12 @@
 
 	/** Guard flag to prevent auto-save during layout reset/restore operations */
 	let isResetting = $state(false);
+
+	/** Settings dialog open state */
+	let showSettingsDialog = $state(false);
+
+	/** Selection stores for settings dialog */
+	let selectedPane = selectionContext.selectedPane;
 
 	/** Available pane types for adding */
 	const paneTypes = [
@@ -244,6 +265,298 @@
 		}
 	}
 
+	/**
+	 * Open settings dialog
+	 */
+	function handleOpenSettings(): void {
+		if ($selectedPane) {
+			showSettingsDialog = true;
+		}
+	}
+
+	/**
+	 * Close settings dialog
+	 */
+	function handleCloseSettings(): void {
+		showSettingsDialog = false;
+	}
+
+	/**
+	 * Handle chart config changes from dialog
+	 */
+	function handleChartConfigChange(config: import('$lib/panes/chart-configs').ChartConfiguration): void {
+		if ($selectedPane) {
+			selectionContext.updatePaneConfig(config);
+			workspaceManager.updatePaneConfig($selectedPane.paneId, {
+				chartConfig: config as any,
+			});
+		}
+	}
+
+	/**
+	 * Handle chart data changes from dialog
+	 */
+	function handleChartDataChange(data: import('$lib/charts/types').ChartDataFrame | null): void {
+		if ($selectedPane) {
+			workspaceManager.updatePaneConfig($selectedPane.paneId, {
+				chartData: data as any,
+			});
+		}
+	}
+
+	/**
+	 * Handle segmented data changes from dialog
+	 */
+	function handleSegmentedDataChange(data: import('$lib/types').SegmentedCurveData | null): void {
+		if ($selectedPane) {
+			workspaceManager.updatePaneConfig($selectedPane.paneId, {
+				segmentedChartData: data as any,
+			});
+		}
+	}
+
+	/**
+	 * Handle correlation curve data changes from dialog
+	 */
+	function handleCorrelationCurveDataChange(trackId: string, data: import('$lib/charts/correlation-types').CorrelationCurveData | null): void {
+		if ($selectedPane) {
+			const paneId = $selectedPane.paneId;
+			const currentPane = workspaceManager.getPaneById(paneId);
+			if (!currentPane) return;
+
+			const existingOptions = currentPane.config?.options ?? {};
+			const existingMap = existingOptions.correlationCurveData as Map<string, any> | undefined;
+			const curveDataMap = new Map(existingMap ?? []);
+
+			if (data) {
+				curveDataMap.set(trackId, data);
+			} else {
+				curveDataMap.delete(trackId);
+			}
+
+			workspaceManager.updatePaneConfig(paneId, {
+				options: {
+					...existingOptions,
+					correlationCurveData: curveDataMap
+				}
+			});
+		}
+	}
+
+	/**
+	 * Handle well change from dialog (for histogram and welllog charts)
+	 * Multi-well charts (crossplot, scatter, line) handle selection internally via toggleMultiWell
+	 */
+	function handleWellChange(wellId: string): void {
+		if (!wellId) return;
+		// Update the global selected well - this loads curves for that well
+		selectWell(wellId);
+	}
+
+	/**
+	 * Handle multi-well data changes from dialog (for crossplot, scatter, line)
+	 */
+	function handleMultiWellDataChange(data: import('$lib/types').MultiWellCurveData[]): void {
+		if ($selectedPane) {
+			workspaceManager.updatePaneConfig($selectedPane.paneId, {
+				multiWellData: data as any,
+			});
+		}
+	}
+
+	// =========================================================================
+	// Data Loading for Restored Panes
+	// =========================================================================
+
+	/**
+	 * Recursively collect all PaneNodes from the layout tree
+	 */
+	function collectAllPanes(node: LayoutNode): PaneNode[] {
+		if (node.type === 'pane') return [node];
+		if (node.type === 'tab') return node.children;
+		if (node.type === 'split') {
+			return node.children.flatMap((child) => collectAllPanes(child));
+		}
+		return [];
+	}
+
+	/**
+	 * Load data for panes that were restored with saved configurations.
+	 * Called after restoreLayout() to populate chart data.
+	 */
+	async function loadDataForRestoredPanes(): Promise<void> {
+		const currentLayout = workspaceManager.saveLayout();
+		const allPanes = collectAllPanes(currentLayout.root);
+
+		console.log('[WorkspaceContainer] Loading data for', allPanes.length, 'restored panes');
+
+		for (const pane of allPanes) {
+			await loadPaneData(pane);
+		}
+
+		console.log('[WorkspaceContainer] Finished loading data for restored panes');
+	}
+
+	/**
+	 * Load data for a single pane based on its type and configuration
+	 */
+	async function loadPaneData(pane: PaneNode): Promise<void> {
+		const config = pane.config?.chartConfig as ChartConfiguration | undefined;
+		if (!config) return;
+
+		try {
+			switch (config.type) {
+				case 'welllog': {
+					const wellLogConfig = config as WellLogConfig;
+					const curveId = wellLogConfig.curve?.curveId;
+					if (curveId) {
+						console.log('[WorkspaceContainer] Loading welllog data for pane:', pane.id, 'curveId:', curveId);
+						const segmentedData = await loadSegmentedCurveData(curveId);
+						if (segmentedData) {
+							workspaceManager.updatePaneConfig(pane.id, {
+								...pane.config,
+								segmentedChartData: segmentedData
+							});
+						}
+					}
+					break;
+				}
+
+				case 'correlation': {
+					const correlationConfig = config as CorrelationConfig;
+					await loadCorrelationPaneData(pane, correlationConfig);
+					break;
+				}
+
+				case 'crossplot':
+				case 'scatter':
+				case 'line': {
+					const multiWellConfig = config as CrossPlotConfig | ScatterChartConfig | LineChartConfig;
+					if (multiWellConfig.selectedWellIds?.length && multiWellConfig.xCurveType && multiWellConfig.yCurveType) {
+						await loadMultiWellPaneData(pane, multiWellConfig);
+					}
+					break;
+				}
+
+				case 'histogram': {
+					const histConfig = config as HistogramConfig;
+					const curveId = histConfig.dataCurve?.curveId;
+					if (curveId) {
+						console.log('[WorkspaceContainer] Loading histogram data for pane:', pane.id, 'curveId:', curveId);
+						const segmentedData = await loadSegmentedCurveData(curveId);
+						if (segmentedData) {
+							workspaceManager.updatePaneConfig(pane.id, {
+								...pane.config,
+								segmentedChartData: segmentedData
+							});
+						}
+					}
+					break;
+				}
+			}
+		} catch (error) {
+			console.error('[WorkspaceContainer] Failed to load data for pane:', pane.id, error);
+		}
+	}
+
+	/**
+	 * Load data for a correlation pane
+	 */
+	async function loadCorrelationPaneData(pane: PaneNode, config: CorrelationConfig): Promise<void> {
+		const curveDataMap = new Map<string, CorrelationCurveData>();
+
+		console.log('[WorkspaceContainer] Loading correlation data for pane:', pane.id, 'wells:', config.wells?.length);
+
+		for (const well of config.wells ?? []) {
+			for (const track of well.tracks ?? []) {
+				if (track.curveId) {
+					const segmentedData = await loadSegmentedCurveData(track.curveId);
+					if (segmentedData) {
+						curveDataMap.set(track.id, {
+							trackId: track.id,
+							mnemonic: segmentedData.mnemonic,
+							unit: segmentedData.unit,
+							segments: segmentedData.segments.map((s) => ({
+								depthStart: s.depth_start,
+								depthEnd: s.depth_end,
+								depths: s.depths,
+								values: s.values
+							})),
+							depthRange: { min: segmentedData.depth_range[0], max: segmentedData.depth_range[1] },
+							totalPoints: segmentedData.total_points,
+							source: {
+								type: 'well_curve',
+								wellId: well.wellId,
+								curveId: track.curveId
+							}
+						});
+					}
+				}
+			}
+		}
+
+		console.log('[WorkspaceContainer] Loaded', curveDataMap.size, 'correlation curves');
+
+		workspaceManager.updatePaneConfig(pane.id, {
+			...pane.config,
+			options: {
+				...pane.config.options,
+				correlationCurveData: curveDataMap
+			}
+		});
+	}
+
+	/**
+	 * Load data for a multi-well pane (crossplot, scatter, line)
+	 */
+	async function loadMultiWellPaneData(
+		pane: PaneNode,
+		config: CrossPlotConfig | ScatterChartConfig | LineChartConfig
+	): Promise<void> {
+		const multiWellData: MultiWellCurveData[] = [];
+		const wellColors = ['#3b82f6', '#22c55e', '#ef4444', '#f59e0b', '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16'];
+
+		// Access stores using get() since we're in an async function
+		const wellsList = get(wells);
+		const workspaceCurves = get(allWorkspaceCurves);
+
+		console.log('[WorkspaceContainer] Loading multi-well data for pane:', pane.id, 'wells:', config.selectedWellIds?.length);
+
+		for (let i = 0; i < (config.selectedWellIds?.length ?? 0); i++) {
+			const wellId = config.selectedWellIds![i];
+			const wellInfo = wellsList.find((w) => w.id === wellId);
+			if (!wellInfo) continue;
+
+			// Find curves matching the curve types for this well
+			const wellCurves = workspaceCurves.filter((c) => c.well_id === wellId);
+			const xCurve = wellCurves.find((c) => c.mnemonic.toUpperCase() === config.xCurveType?.toUpperCase());
+			const yCurve = wellCurves.find((c) => c.mnemonic.toUpperCase() === config.yCurveType?.toUpperCase());
+
+			let xData: SegmentedCurveData | null = null;
+			let yData: SegmentedCurveData | null = null;
+
+			if (xCurve) xData = await loadSegmentedCurveData(xCurve.id);
+			if (yCurve) yData = await loadSegmentedCurveData(yCurve.id);
+
+			if (xData && yData) {
+				multiWellData.push({
+					wellId,
+					wellName: wellInfo.name,
+					wellColor: wellColors[i % wellColors.length],
+					xCurve: xData,
+					yCurve: yData
+				});
+			}
+		}
+
+		console.log('[WorkspaceContainer] Loaded', multiWellData.length, 'wells of multi-well data');
+
+		workspaceManager.updatePaneConfig(pane.id, {
+			...pane.config,
+			multiWellData
+		});
+	}
+
 	// Auto-save on layout changes - SKIP during reset/restore operations AND workspace switches
 	$effect(() => {
 		// Track $events to react to layout changes
@@ -300,6 +613,8 @@
 				(async () => {
 					try {
 						await restoreLayout();
+						// Load data for restored panes after layout is restored
+						await loadDataForRestoredPanes();
 					} finally {
 						console.log('[WorkspaceContainer] Restore complete, setting isResetting=false');
 						isResetting = false;
@@ -317,6 +632,8 @@
 			(async () => {
 				try {
 					await restoreLayout();
+					// Load data for restored panes after layout is restored
+					await loadDataForRestoredPanes();
 				} finally {
 					isResetting = false;
 				}
@@ -381,26 +698,49 @@
 		</div>
 	</div>
 
-	<!-- Chart Interaction Bar - Always visible, shows cursor mode tools -->
-	<ChartInteractionBar />
+	<!-- Chart Settings Toolbar - Shows chart info and settings gear -->
+	<ChartSettingsToolbar onOpenSettings={handleOpenSettings} />
 
-	<!-- Layout Content -->
-	<div class="workspace-content">
-		{#if isEmpty}
-			<!-- Empty workspace placeholder -->
-			<div class="workspace-empty">
-				<svg width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5">
-					<rect x="6" y="6" width="36" height="36" rx="4" opacity="0.3" />
-					<path d="M24 16v16M16 24h16" opacity="0.5" />
-				</svg>
-				<h3>No Charts Open</h3>
-				<p>Click <strong>Add Pane</strong> to add a chart to your workspace</p>
-			</div>
-		{:else if $layout}
-			<LayoutRenderer node={$layout.root} />
-		{/if}
+	<!-- Workspace body: vertical toolbar on left + content -->
+	<div class="workspace-body">
+		<!-- Chart Interaction Bar - Vertical toolbar on left -->
+		<ChartInteractionBar />
+
+		<!-- Layout Content -->
+		<div class="workspace-content">
+			{#if isEmpty}
+				<!-- Empty workspace placeholder -->
+				<div class="workspace-empty">
+					<svg width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5">
+						<rect x="6" y="6" width="36" height="36" rx="4" opacity="0.3" />
+						<path d="M24 16v16M16 24h16" opacity="0.5" />
+					</svg>
+					<h3>No Charts Open</h3>
+					<p>Click <strong>Add Pane</strong> to add a chart to your workspace</p>
+				</div>
+			{:else if $layout}
+				<LayoutRenderer node={$layout.root} />
+			{/if}
+		</div>
 	</div>
 </div>
+
+<!-- Chart Settings Dialog -->
+<ChartSettingsDialog
+	open={showSettingsDialog}
+	onClose={handleCloseSettings}
+	pane={$selectedPane?.paneNode ?? null}
+	config={$selectedPane?.chartConfig ?? null}
+	wells={$wells}
+	curves={$curves}
+	well={$selectedWell ?? null}
+	onWellChange={handleWellChange}
+	onConfigChange={handleChartConfigChange}
+	onDataChange={handleChartDataChange}
+	onSegmentedDataChange={handleSegmentedDataChange}
+	onCorrelationCurveDataChange={handleCorrelationCurveDataChange}
+	onMultiWellDataChange={handleMultiWellDataChange}
+/>
 
 <style>
 	.workspace-container {
@@ -523,6 +863,12 @@
 	.add-menu-item:focus-visible {
 		outline: 2px solid var(--color-primary, #3b82f6);
 		outline-offset: -2px;
+	}
+
+	.workspace-body {
+		display: flex;
+		flex: 1;
+		overflow: hidden;
 	}
 
 	.workspace-content {

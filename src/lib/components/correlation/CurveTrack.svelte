@@ -72,7 +72,7 @@
 				id={chartId}
 				data={null}
 				segmentedData={segmentedChartData}
-				type="line"
+				type="welllog"
 				title=""
 				height={chartHeight}
 				invertY={true}

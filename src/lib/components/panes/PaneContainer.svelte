@@ -89,6 +89,9 @@
 	/** Extract segmented chart data reactively from pane (new segment-based architecture) */
 	let segmentedChartData = $derived(pane?.config?.segmentedChartData as import('$lib/types').SegmentedCurveData | undefined);
 
+	/** Extract multi-well data for crossplot/scatter/line charts */
+	let multiWellData = $derived(pane?.config?.multiWellData as import('$lib/types').MultiWellCurveData[] | undefined);
+
 	/** Extract correlation config for correlation pane type */
 	let correlationConfig = $derived.by(() => {
 		if (pane?.paneType !== PaneType.Correlation) return null;
@@ -350,6 +353,7 @@
 					id={pane.id}
 					data={chartData ?? null}
 					segmentedData={segmentedChartData ?? null}
+					multiWellData={multiWellData ?? undefined}
 					type={pane.paneType === PaneType.Histogram ? 'histogram' : (pane.paneType === PaneType.WellLog ? 'welllog' : (pane.paneType === PaneType.ScatterChart || pane.paneType === PaneType.CrossPlot ? 'scatter' : 'line'))}
 					height={height - 36}
 					title={chartConfig?.title}
